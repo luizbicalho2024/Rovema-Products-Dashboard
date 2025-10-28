@@ -290,7 +290,7 @@ def get_latest_aggregated_data(product_name: str, start_date: date, end_date: da
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=600, show_spinner="Buscando lista de clientes...")
+#@st.cache_data(ttl=600, show_spinner="Buscando lista de clientes...")
 def get_all_clients_with_products():
     """
     [CORRIGIDO] Busca todos os clientes (empresas) únicos nos dados brutos
