@@ -3,15 +3,16 @@ import altair as alt
 import pandas as pd
 from datetime import date, timedelta
 from fire_admin import log_event
-from utils.data_processing import fetch_asto_data, fetch_eliq_data, get_latest_uploaded_data
+from utils.data_processing import get_latest_uploaded_data # Remove fetch_asto_data/fetch_eliq_data
 
-# --- Funções Auxiliares de Visualização ---
+# --- Funções Auxiliares de Visualização (Mapeando o PDF) ---
 
 def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
     """Calcula as métricas principais para o header."""
     
     rovema_revenue = rovemapay_df['Receita'].sum() if not rovemapay_df.empty else 0
     bionio_value = bionio_df['Valor Total Pedidos'].sum() if not bionio_df.empty else 0
+    # ASTO: Usamos a soma da coluna Receita diretamente do dataframe agregado
     asto_revenue = asto_df['Receita'].sum() if not asto_df.empty else 0
     
     total_revenue_sim = 2_146_293.35 # Valor simulado do PDF
@@ -55,7 +56,6 @@ def dashboard_page():
         return
 
     st.title("ROVEMA BANK: Dashboard de Transações")
-    st.caption("Filtros Ativos na Barra Lateral")
     log_event("VIEW_DASHBOARD", "Visualizando o dashboard principal.")
     
     # --- 0. FILTROS NA BARRA LATERAL (Sidebar) ---
@@ -108,12 +108,13 @@ def dashboard_page():
     def load_data(start_date, end_date, update_counter):
         """Carrega todos os dados, garantindo que o cache seja invalidado pelo botão Atualizar."""
         return (
-            fetch_asto_data(start_date, end_date),
-            fetch_eliq_data(start_date, end_date),
+            get_latest_uploaded_data('Asto', start_date, end_date),
+            get_latest_uploaded_data('Eliq', start_date, end_date),
             get_latest_uploaded_data('Bionio', start_date, end_date),
             get_latest_uploaded_data('Rovema Pay', start_date, end_date)
         )
 
+    # Carrega dados
     asto_df, eliq_df, bionio_df_db, rovemapay_df_db = load_data(start_date, end_date, st.session_state['update_counter'])
     
     
@@ -141,7 +142,7 @@ def dashboard_page():
     if "Asto" in selected_products and not asto_df.empty:
         current_asto_revenue = asto_df['Receita'].sum()
         current_valor_transacionado += asto_df['valorBruto'].sum()
-
+        
     # 4. Eliq (Volume)
     if "Eliq" in selected_products and not eliq_df.empty:
         current_eliq_volume = eliq_df['valor_total'].sum()
@@ -183,7 +184,6 @@ def dashboard_page():
             
             # 2. ASTO (Cria o Mês e combina)
             asto_temp = asto_df.rename(columns={'dataFimApuracao': 'Mês_date', 'valorBruto': 'Liquido', 'Receita': 'Receita'}).copy()
-            # FIX: Cria a coluna 'Mês' a partir da coluna de data
             asto_temp['Mês'] = pd.to_datetime(asto_temp['Mês_date']).dt.to_period('M').astype(str)
             asto_long = asto_temp.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
             
@@ -243,7 +243,7 @@ def dashboard_page():
             carteira_chart = alt.Chart(carteira_df).mark_bar().encode(
                 x=alt.X("Carteira:N", title=""),
                 y=alt.Y("Receita Total", title="Receita (R$)"),
-                color=alt.Color("Carteira:N"), # Adicionando cor para melhor visualização
+                color=alt.Color("Carteira:N"), 
                 tooltip=["Carteira", alt.Tooltip("Receita Total", format="$,.2f")]
             ).properties(title="").interactive()
             st.altair_chart(carteira_chart, use_container_width=True)
@@ -260,6 +260,7 @@ def dashboard_page():
     # R1: TOP 10 QUEDA (Estático)
     with col_r1:
         st.subheader("Top 10 Queda")
+        # FIX: Corrigido o erro de sintaxe de renomeação aqui.
         st.dataframe(ranking_queda_df[['Cliente', 'CNPJ', 'Variação']].rename(columns={'Variação': 'Variação %'}), hide_index=True, use_container_width=True)
 
     # R2: TOP 10 CRESCIMENTO (Estático)
