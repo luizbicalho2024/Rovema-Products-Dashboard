@@ -60,6 +60,7 @@ def process_uploaded_file(uploaded_file, product_name):
         uploaded_file.seek(0)
 
         if is_csv:
+            # Tenta leituras robustas para CSV
             try:
                 df = pd.read_csv(uploaded_file, decimal=',', sep=';', thousands='.', header=0)
             except Exception:
@@ -70,9 +71,13 @@ def process_uploaded_file(uploaded_file, product_name):
             # Lê o Excel, assumindo header na primeira linha
             df = pd.read_excel(uploaded_file, header=0) 
         
-        # CRITICAL FIX: Limpa e padroniza (lowercase e underscore) os nomes das colunas
+        # CRITICAL FIX 1: Limpa e padroniza (lowercase e underscore) os nomes das colunas
         df.columns = [col.strip().lower().replace(' ', '_').replace('.', '').replace('%', '') if isinstance(col, str) else str(col).lower() for col in df.columns]
         
+        # CRITICAL FIX 2: Remove linhas e colunas totalmente vazias ou com NaN
+        df = df.dropna(how='all', axis=0)
+        df = df.dropna(how='all', axis=1)
+
         if product_name == 'Bionio':
             df_processed = process_bionio_data(df.copy())
         elif product_name == 'RovemaPay':
@@ -105,6 +110,7 @@ def process_bionio_data(df):
     
     df = df.dropna(subset=[VALOR_COL, DATA_COL])
     
+    # Retorna o DataFrame RAW limpo (todas as linhas).
     return df
 
 def process_rovemapay_data(df):
@@ -119,15 +125,15 @@ def process_rovemapay_data(df):
 
     if not all(col in df.columns for col in REQUIRED_COLS):
         missing = [col for col in REQUIRED_COLS if col not in df.columns]
+        # Esta exceção deve capturar o problema do cabeçalho
         raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Colunas disponíveis: {df.columns.tolist()}")
 
-    # Função auxiliar para limpar e converter valores de string (mais defensiva)
+    # Função auxiliar para limpar e converter valores de string
     def clean_value(series_key):
         series = df.get(series_key)
         if series is None: return pd.Series([np.nan] * len(df))
             
         if series.dtype == 'object':
-            # Usa .fillna('') para evitar erro de string em células vazias
             cleaned = series.fillna('').astype(str).str.replace(r'[\sR\$\%]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
             return cleaned
         return series
@@ -136,7 +142,6 @@ def process_rovemapay_data(df):
     df[LIQUIDO_COL] = pd.to_numeric(clean_value(LIQUIDO_COL), errors='coerce')
     df[BRUTO_COL] = pd.to_numeric(clean_value(BRUTO_COL), errors='coerce')
     
-    # Taxas também devem ser limpas para cálculos
     df['taxa_cliente'] = pd.to_numeric(clean_value('taxa_cliente'), errors='coerce')
     df['taxa_adquirente'] = pd.to_numeric(clean_value('taxa_adquirente'), errors='coerce')
     
@@ -148,7 +153,7 @@ def process_rovemapay_data(df):
     
     # Cálculo das colunas de Receita e Custo_Total_Perc
     df['receita'] = df[BRUTO_COL] - df[LIQUIDO_COL]
-    df['custo_total_perc'] = np.where(df[BRUTO_COL] != 0, (df['receita'] / df[BRUTO_COL]) * 100, 0)
+    df['custo_total_perc'] = np.where(df[BRUTO_COL] != 0, (df[LIQUIDO_COL] / df[BRUTO_COL]) * 100, 0)
     
     # Retorna o DataFrame RAW limpo (todas as linhas).
     return df
