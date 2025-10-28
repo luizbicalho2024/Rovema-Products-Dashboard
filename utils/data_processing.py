@@ -100,7 +100,8 @@ def process_uploaded_file(uploaded_file, product_name):
         
     except Exception as e:
         log_event("FILE_PROCESSING_FAIL", f"Erro no processamento de {product_name}: {e}")
-        return False, f"Erro no processamento do arquivo: {e}", None 
+        print(f"ERRO Processamento Arquivo ({product_name}): {e}") # Adicionado
+        return False, f"Erro no processamento do arquivo: {e}", None
 
 def process_bionio_data(df):
     """
@@ -174,7 +175,10 @@ def get_raw_data_from_firestore(product_name: str, start_date: date, end_date: d
     """
     Busca dados RAW do Firestore, FILTRANDO por data no lado do servidor.
     """
-    if st.session_state.get('db') is None: 
+    # Adiciona verificação robusta do DB
+    db_conn = st.session_state.get('db')
+    if db_conn is None: 
+        log_event("FIRESTORE_FETCH_FAIL", f"Conexão DB nula ao buscar dados para {product_name}.")
         return pd.DataFrame()
 
     collection_name = f"data_{product_name.lower().replace(' ', '_')}"
@@ -196,9 +200,12 @@ def get_raw_data_from_firestore(product_name: str, start_date: date, end_date: d
     end_datetime = datetime.combine(end_date, time.max)
 
     try:
-        query_ref = st.session_state['db'].collection(collection_name)
+        query_ref = db_conn.collection(collection_name)
+        # Aplica o filtro de data
         query_ref = query_ref.where(DATA_COL, '>=', start_datetime)
         query_ref = query_ref.where(DATA_COL, '<=', end_datetime)
+        
+        # Limite de segurança
         docs = query_ref.limit(20000).stream() 
         data_list = [doc.to_dict() for doc in docs]
 
@@ -207,16 +214,19 @@ def get_raw_data_from_firestore(product_name: str, start_date: date, end_date: d
 
         df = pd.DataFrame(data_list)
         
+        # Converte a coluna de data para datetime
         if DATA_COL in df.columns:
             df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
-            df = df.dropna(subset=[DATA_COL])
+            df = df.dropna(subset=[DATA_COL]) # Remove linhas onde a data é inválida
         else:
-            return pd.DataFrame()
+             log_event("FIRESTORE_FETCH_WARN", f"Coluna de data '{DATA_COL}' não encontrada em {product_name}.")
+             return pd.DataFrame() # Retorna vazio se a coluna de data não existe
 
         return df
 
     except Exception as e:
         log_event("FIRESTORE_FETCH_FAIL", f"Falha ao buscar dados de {product_name} no Firestore: {e}")
+        print(f"ERRO Firestore ({product_name}): {e}") # Adicionado para visibilidade no console
         return pd.DataFrame()
 
 
@@ -287,67 +297,82 @@ def get_latest_aggregated_data(product_name: str, start_date: date, end_date: da
 
     except Exception as e:
         log_event("DATA_AGGREGATION_FAIL", f"Falha ao agregar dados de {product_name}: {e}")
+        print(f"ERRO Agregação ({product_name}): {e}") # Adicionado
         return pd.DataFrame()
 
 
-# --- [FUNÇÃO CORRIGIDA] ---
-# REMOVIDA A LINHA DE CACHE: @st.cache_data(ttl=600, show_spinner="Buscando lista de clientes...")
+# --- [FUNÇÃO CORRIGIDA - LEITURA DIRETA SEM CACHE] ---
 def get_all_clients_with_products():
     """
-    [CORRIGIDO] Busca todos os clientes (empresas) únicos nos dados brutos
+    [CORRIGIDO - Leitura Direta] Busca todos os clientes (empresas) únicos nos dados brutos
     e retorna um DataFrame com o cliente e o produto de origem.
     Garante que os dados de API (Asto, Eliq) sejam carregados.
+    Lê diretamente das coleções para evitar problemas de filtro de data.
     """
-    start_date = date(2020, 1, 1)
-    end_date = date(2099, 12, 31)
+    start_date = date(2020, 1, 1) # Usado apenas para fetch_api_and_save
+    end_date = date(2099, 12, 31) # Usado apenas para fetch_api_and_save
     
-    all_clients_dfs = []
+    all_clients_data = [] # Lista para armazenar dicts {'client_id': id, 'product': prod}
 
-    # Mapeamento de Produto -> Lista de colunas de cliente (em ordem de prioridade)
-    # Baseado nas suas imagens de evidência.
+    # Adiciona verificação robusta do DB
+    db_conn = st.session_state.get('db')
+    if db_conn is None:
+        log_event("CLIENT_FETCH_ERROR", "Conexão DB nula ao buscar lista de clientes.")
+        return pd.DataFrame(columns=['client_id', 'product'])
+
     product_client_column_map = {
-        'Rovema Pay': ['cnpj', 'ec'], #
-        'Bionio': ['cnpj_da_organização', 'razão_social'], #
+        'Rovema Pay': ['cnpj', 'ec'], 
+        'Bionio': ['cnpj_da_organização', 'razão_social'],
         'Asto': ['cnpj', 'cliente'],
         'Eliq': ['cnpj_posto']
     }
 
     for product, client_columns in product_client_column_map.items():
         
+        collection_name = f"data_{product.lower().replace(' ', '_')}"
+        
         if product in ['Asto', 'Eliq']:
             try:
+                # Dispara o fetch/save da API (ainda usa cache interno)
                 fetch_api_and_save(product, start_date, end_date)
             except Exception as e:
                 log_event("CLIENT_FETCH_API_FAIL", f"Falha ao salvar API {product} para Gestão: {e}")
+                print(f"ERRO API Save ({product}): {e}") # Adicionado
                 continue
         
-        # Lê os dados (sejam de upload ou da API recém-salva)
-        df_raw = get_raw_data_from_firestore(product, start_date, end_date)
-        
-        if not df_raw.empty:
+        # --- INÍCIO DA LEITURA DIRETA ---
+        try:
+            docs = db_conn.collection(collection_name).limit(50000).stream() # Limite alto para pegar todos os clientes
             
-            df_product_clients = pd.DataFrame()
-            
-            # Tenta encontrar a primeira coluna de cliente válida na ordem de prioridade
-            found_col = None
-            for col in client_columns:
-                if col in df_raw.columns:
-                    found_col = col
-                    break # Encontrou a coluna prioritária
-            
-            if found_col:
-                df_product_clients = df_raw[[found_col]].copy()
-                df_product_clients = df_product_clients.rename(columns={found_col: 'client_id'})
-                df_product_clients['product'] = product
-                df_product_clients = df_product_clients.dropna(subset=['client_id'])
-                all_clients_dfs.append(df_product_clients)
-            else:
-                log_event("CLIENT_FETCH_WARN", f"Produto {product} não possui nenhuma coluna de cliente identificável (ex: {', '.join(client_columns)}).")
-                continue # Pula este produto
+            found_clients_for_product = False
+            for doc in docs:
+                data = doc.to_dict()
+                
+                # Tenta encontrar a primeira coluna de cliente válida
+                client_id = None
+                for col in client_columns:
+                    if col in data and data[col] is not None:
+                        client_id = str(data[col]) # Garante que seja string
+                        break 
+                
+                if client_id:
+                    all_clients_data.append({'client_id': client_id, 'product': product})
+                    found_clients_for_product = True
 
-    if not all_clients_dfs:
-        log_event("CLIENT_FETCH_ERROR", "Nenhum cliente encontrado em nenhum produto.")
+            if not found_clients_for_product:
+                 log_event("CLIENT_FETCH_INFO", f"Nenhum cliente com ID válido encontrado em {collection_name} (colunas: {', '.join(client_columns)}).")
+
+        except Exception as e:
+            log_event("CLIENT_FETCH_DIRECT_READ_FAIL", f"Falha ao ler coleção {collection_name} diretamente: {e}")
+            print(f"ERRO Leitura Direta ({collection_name}): {e}") # Adicionado
+            continue # Pula para o próximo produto se a leitura falhar
+        # --- FIM DA LEITURA DIRETA ---
+
+
+    if not all_clients_data:
+        log_event("CLIENT_FETCH_ERROR", "Nenhum cliente encontrado em nenhum produto após leitura direta.")
         return pd.DataFrame(columns=['client_id', 'product'])
 
-    final_df = pd.concat(all_clients_dfs).drop_duplicates()
+    # Converte a lista de dicts para DataFrame e remove duplicatas
+    final_df = pd.DataFrame(all_clients_data).drop_duplicates()
     return final_df
