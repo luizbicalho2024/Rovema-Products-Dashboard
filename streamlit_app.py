@@ -32,18 +32,25 @@ def load_css():
             border-radius: 15px;
             box-shadow: 0 8px 16px rgba(0,0,0,0.1); /* Sombra suave */
             background-color: #ffffff; /* Fundo branco para o card */
-            margin-top: 10vh; /* Espaçamento do topo */
+            margin-top: 5vh; /* Espaçamento do topo reduzido */
         }
-        
+
+        /* Logo dentro do container */
+        .login-container img {
+             margin-bottom: 1.5rem; /* Espaço abaixo da logo */
+        }
+
         /* Título dentro do container */
         .login-container .stTitle {
             text-align: center;
+            margin-top: 0; /* Remove margem extra acima do título */
         }
-        
+
         /* Subheader dentro do container */
         .login-container .stSubheader {
             text-align: center;
             color: #4f4f4f; /* Cor mais suave */
+            margin-bottom: 1rem; /* Espaço abaixo do subheader */
         }
 
         /* Botão de login com largura total */
@@ -58,7 +65,7 @@ def load_css():
             color: white;
             border: 1px solid #0059b3;
         }
-        
+
         /* Alertas (erro, warning) */
         .login-container .stAlert {
             width: 100%;
@@ -78,16 +85,23 @@ if 'authenticated' not in st.session_state:
 # --- Página de Login ---
 
 if not st.session_state['authenticated']:
-    
+
     # Carrega o CSS customizado
     load_css()
-    
+
     # --- Layout do Container de Login ---
     st.markdown('<div class="login-container">', unsafe_allow_html=True)
 
-    # (Opcional: Adicione sua logo aqui)
-    # st.image("path/to/your/logo.png", width=200) 
-    
+    # --- ADIÇÃO DA LOGO ---
+    # Certifique-se que a pasta 'assets' está na raiz do projeto
+    try:
+        st.image("assets/logoRB.png", width=250) # Ajuste a largura (width) conforme necessário
+    except FileNotFoundError:
+        st.error("Erro: Arquivo 'assets/logoRB.png' não encontrado. Verifique o caminho.")
+    except Exception as e:
+        st.error(f"Erro ao carregar a logo: {e}")
+    # --- FIM DA ADIÇÃO DA LOGO ---
+
     st.title("Rovema Bank Pulse 📈")
     st.subheader("Sistema de Gestão de Performance")
     st.markdown("---")
@@ -107,7 +121,7 @@ if not st.session_state['authenticated']:
                 st.error(message)
 
     st.markdown("---")
-    
+
     # Informações de Acesso (agora em um expander)
     with st.expander("Informações de Nível de Acesso"):
         st.markdown(
@@ -121,15 +135,15 @@ if not st.session_state['authenticated']:
     if initialization_success:
         auth_service = st.session_state.get('auth_service')
         db = st.session_state.get('db')
-        
+
         if auth_service and db and not db.collection('users').limit(1).get():
              st.warning("⚠️ **Alerta de Setup:** Crie seu primeiro usuário 'Admin' manualmente no Console do Firebase.")
     else:
         st.error("Falha na conexão com o Firebase. Verifique os logs e o arquivo secrets.toml.")
-    
+
     # Fecha o container
     st.markdown('</div>', unsafe_allow_html=True)
-             
+
 # --- Dashboard Principal (Após Login) ---
 else:
     # Mostra a barra lateral
@@ -137,6 +151,6 @@ else:
     st.sidebar.markdown(f"**Usuário:** `{st.session_state['user_email']}`")
     st.sidebar.markdown(f"**Nível:** **`{st.session_state['user_role']}`**")
     st.sidebar.markdown("---")
-    
+
     if st.sidebar.button("Logout", help="Sair do sistema com segurança"):
         logout_user()
