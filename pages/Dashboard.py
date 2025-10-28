@@ -174,28 +174,55 @@ def dashboard_page():
         with col_g1:
             st.header("Evolução (Receita e Volume)")
             
-            if ("Rovema Pay" in selected_products and not rovemapay_df_agg.empty) or \
-               ("Asto" in selected_products and not asto_df_agg.empty):
-                
-                # 1. ROVEMA PAY
-                rovema_long = rovemapay_df_agg.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
-                
-                # 2. ASTO
-                asto_long = asto_df_agg.melt('Mês', value_vars=['Receita', 'valorBruto'], var_name='Métrica', value_name='Valor')
-                asto_long['Métrica'] = asto_long['Métrica'].replace({'valorBruto': 'Volume'})
+            # --- INÍCIO DA CORREÇÃO ---
+            
+            # Verifica quais dados estão disponíveis
+            has_rovemapay_data = "Rovema Pay" in selected_products and not rovemapay_df_agg.empty
+            has_asto_data = "Asto" in selected_products and not asto_df_agg.empty
 
-                final_evolucao_df = pd.concat([rovema_long, asto_long]).groupby(['Mês', 'Métrica'])['Valor'].sum().reset_index()
+            if has_rovemapay_data or has_asto_data:
                 
-                evolucao_chart = alt.Chart(final_evolucao_df).mark_line(point=True).encode(
-                    x=alt.X('Mês:O', title=''),
-                    y=alt.Y('Valor', title='Valor (R$)'),
-                    color='Métrica',
-                    tooltip=['Mês', alt.Tooltip('Valor', format='$,.2f'), 'Métrica']
-                ).properties(title='Evolução da Receita e Volume (Asto + RovemaPay)').interactive()
+                # Inicializa DataFrames vazios para concatenação
+                rovema_long = pd.DataFrame()
+                asto_long = pd.DataFrame()
                 
-                st.altair_chart(evolucao_chart, use_container_width=True)
+                # 1. ROVEMA PAY (Processa condicionalmente)
+                if has_rovemapay_data:
+                    if all(col in rovemapay_df_agg.columns for col in ['Mês', 'Receita', 'Liquido']):
+                        rovema_long = rovemapay_df_agg.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
+                    else:
+                        st.warning("Dados de Rovema Pay estão incompletos para o gráfico de evolução.")
+                
+                # 2. ASTO (Processa condicionalmente)
+                if has_asto_data:
+                    if all(col in asto_df_agg.columns for col in ['Mês', 'Receita', 'valorBruto']):
+                        asto_long = asto_df_agg.melt('Mês', value_vars=['Receita', 'valorBruto'], var_name='Métrica', value_name='Valor')
+                        asto_long['Métrica'] = asto_long['Métrica'].replace({'valorBruto': 'Volume'})
+                    else:
+                        st.warning("Dados de Asto estão incompletos para o gráfico de evolução.")
+                
+                # 3. Concatena os DataFrames (funciona mesmo se um deles estiver vazio)
+                final_evolucao_df = pd.concat([rovema_long, asto_long])
+                
+                # 4. Plota o gráfico apenas se o DataFrame final tiver dados
+                if not final_evolucao_df.empty:
+                    final_evolucao_df = final_evolucao_df.groupby(['Mês', 'Métrica'])['Valor'].sum().reset_index()
+                    
+                    evolucao_chart = alt.Chart(final_evolucao_df).mark_line(point=True).encode(
+                        x=alt.X('Mês:O', title=''),
+                        y=alt.Y('Valor', title='Valor (R$)'),
+                        color='Métrica',
+                        tooltip=['Mês', alt.Tooltip('Valor', format='$,.2f'), 'Métrica']
+                    ).properties(title='Evolução da Receita e Volume (Asto + RovemaPay)').interactive()
+                    
+                    st.altair_chart(evolucao_chart, use_container_width=True)
+                else:
+                    st.info("Não foi possível gerar o gráfico de evolução (verifique os dados ou seleções).")
+                    
             else:
-                st.info("Selecione 'Rovema Pay' e/ou 'Asto' para ver o gráfico de evolução.")
+                st.info("Selecione 'Rovema Pay' e/ou 'Asto' (e verifique o filtro de data) para ver o gráfico de evolução.")
+            
+            # --- FIM DA CORREÇÃO ---
 
         # G2: Participação por Bandeira e Receita por Carteira
         with col_g2:
