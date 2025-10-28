@@ -20,13 +20,10 @@ def fetch_asto_data(start_date: date, end_date: date):
     """Simula a coleta de dados RAW de Fatura Pagamento Fechada do Asto (API)."""
     
     data = [
-        {"dataFimApuracao": "2025-10-07T00:00:00", "valorBruto": 2159.81, "valorLiquido": 2084.21},
-        {"dataFimApuracao": "2025-10-14T00:00:00", "valorBruto": 15986.99, "valorLiquido": 15427.44},
-        {"dataFimApuracao": "2025-10-21T00:00:00", "valorBruto": 9970.72, "valorLiquido": 9621.74},
-        {"dataFimApuracao": "2025-07-15T00:00:00", "valorBruto": 5000.00, "valorLiquido": 4800.00},
+        {"dataFimApuracao": "2025-10-07T00:00:00", "valorBruto": 2159.81, "valorLiquido": 2084.21, "cnpj": "11.111.111/0001-11", "cliente": "Cliente Asto 1"},
+        {"dataFimApuracao": "2025-10-14T00:00:00", "valorBruto": 15986.99, "valorLiquido": 15427.44, "cnpj": "22.222.222/0001-22", "cliente": "Cliente Asto 2"},
     ]
     df = pd.DataFrame(data)
-    # Garante que os dados mocados sejam convertidos para datetime para salvar corretamente
     df['dataFimApuracao'] = pd.to_datetime(df['dataFimApuracao']).dt.normalize()
     df['Receita'] = df['valorBruto'] - df['valorLiquido']
     return df
@@ -35,13 +32,10 @@ def fetch_eliq_data(start_date: date, end_date: date):
     """Simula a coleta de dados RAW de Transações do Eliq (API)."""
     
     data = [
-        {"data_cadastro": "2025-09-01 10:00:00", "valor_total": 500.00, "consumo_medio": 7.5, "status": "confirmada"},
-        {"data_cadastro": "2025-09-08 15:30:00", "valor_total": 1200.50, "consumo_medio": 6.8, "status": "confirmada"},
-        {"data_cadastro": "2025-10-01 14:00:00", "valor_total": 900.00, "consumo_medio": 7.3, "status": "confirmada"},
-        {"data_cadastro": "2025-07-20 10:00:00", "valor_total": 300.00, "consumo_medio": 7.0, "status": "confirmada"},
+        {"data_cadastro": "2025-09-01 10:00:00", "valor_total": 500.00, "consumo_medio": 7.5, "status": "confirmada", "cnpj_posto": "33.333.333/0001-33"},
+        {"data_cadastro": "2025-10-01 14:00:00", "valor_total": 900.00, "consumo_medio": 7.3, "status": "confirmada", "cnpj_posto": "44.444.444/0001-44"},
     ]
     df = pd.DataFrame(data)
-    # Garante que os dados mocados sejam convertidos para datetime para salvar corretamente
     df['data_cadastro'] = pd.to_datetime(df['data_cadastro']).dt.normalize()
     return df
 
@@ -63,8 +57,6 @@ def fetch_api_and_save(product_name: str, start_date: date, end_date: date):
         log_event("API_FETCH_EMPTY", f"API de {product_name} retornou dados vazios.")
         return pd.DataFrame()
         
-    # Salva o resultado no Firestore
-    # (Em um cenário real, isso teria lógica para evitar duplicatas)
     success, message = save_data_to_firestore(product_name, df_raw, 'API')
 
     return df_raw
@@ -114,7 +106,9 @@ def process_bionio_data(df):
     
     VALOR_COL = 'valor_total_do_pedido'
     DATA_COL = 'data_da_criação_do_pedido'
-    REQUIRED_COLS = [VALOR_COL, DATA_COL]
+    CLIENTE_COL = 'cnpj' # Assumindo que Bionio tem uma coluna 'cnpj' ou 'cliente'
+    
+    REQUIRED_COLS = [VALOR_COL, DATA_COL, CLIENTE_COL]
     
     if not all(col in df.columns for col in REQUIRED_COLS):
         missing = [col for col in REQUIRED_COLS if col not in df.columns]
@@ -122,11 +116,9 @@ def process_bionio_data(df):
 
     df[VALOR_COL] = df[VALOR_COL].astype(str).str.replace(r'[\sR\$]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
     df[VALOR_COL] = pd.to_numeric(df[VALOR_COL], errors='coerce')
-    
-    # Converte para datetime e normaliza (remove horas)
     df[DATA_COL] = pd.to_datetime(df[DATA_COL], format='%d/%m/%Y', errors='coerce').dt.normalize()
     
-    df = df.dropna(subset=[VALOR_COL, DATA_COL])
+    df = df.dropna(subset=[VALOR_COL, DATA_COL, CLIENTE_COL])
     return df
 
 def process_rovemapay_data(df):
@@ -135,16 +127,17 @@ def process_rovemapay_data(df):
     BRUTO_COL = 'bruto'
     VENDA_COL = 'venda'
     STATUS_COL = 'status'
-    REQUIRED_COLS = [LIQUIDO_COL, BRUTO_COL, VENDA_COL, STATUS_COL]
+    CLIENTE_COL = 'cnpj' # Assumindo que RovemaPay tem 'cnpj' ou 'cliente'
+    
+    REQUIRED_COLS = [LIQUIDO_COL, BRUTO_COL, VENDA_COL, STATUS_COL, CLIENTE_COL]
 
     if not all(col in df.columns for col in REQUIRED_COLS):
         missing = [col for col in REQUIRED_COLS if col not in df.columns]
-        raise ValueError(f"Colunas obrigatóbrias ausentes: {missing}. Colunas disponíveis: {df.columns.tolist()}")
+        raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Colunas disponíveis: {df.columns.tolist()}")
 
     def clean_value(series_key):
         series = df.get(series_key)
         if series is None: return pd.Series([np.nan] * len(df))
-            
         if series.dtype == 'object':
             cleaned = series.fillna('').astype(str).str.replace(r'[\sR\$\%]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
             return cleaned
@@ -152,32 +145,28 @@ def process_rovemapay_data(df):
         
     df[LIQUIDO_COL] = pd.to_numeric(clean_value(LIQUIDO_COL), errors='coerce')
     df[BRUTO_COL] = pd.to_numeric(clean_value(BRUTO_COL), errors='coerce')
-    
     df['taxa_cliente'] = pd.to_numeric(clean_value('taxa_cliente'), errors='coerce')
     df['taxa_adquirente'] = pd.to_numeric(clean_value('taxa_adquirente'), errors='coerce')
-    
-    # Converte para datetime e normaliza (remove horas)
     df[VENDA_COL] = pd.to_datetime(df.get(VENDA_COL), errors='coerce').dt.normalize()
     
-    df = df.dropna(subset=[BRUTO_COL, LIQUIDO_COL, VENDA_COL, STATUS_COL])
+    df = df.dropna(subset=[BRUTO_COL, LIQUIDO_COL, VENDA_COL, STATUS_COL, CLIENTE_COL])
     
     df['receita'] = df[BRUTO_COL] - df[LIQUIDO_COL]
     df['custo_total_perc'] = np.where(df[BRUTO_COL] != 0, (df[LIQUIDO_COL] / df[BRUTO_COL]) * 100, 0)
     
     return df
 
+
 # --- Funções de Busca e Agregação de Dados ---
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_raw_data_from_firestore(product_name: str, start_date: date, end_date: date):
     """
-    **[NOVA FUNÇÃO ROBUSTA]**
     Busca dados RAW do Firestore, FILTRANDO por data no lado do servidor.
     """
     if st.session_state.get('db') is None: 
         return pd.DataFrame()
 
-    # 1. Define o nome da coleção e a coluna de data relevante
     collection_name = f"data_{product_name.lower().replace(' ', '_')}"
     DATA_COL = None
     if product_name == 'Bionio':
@@ -193,21 +182,14 @@ def get_raw_data_from_firestore(product_name: str, start_date: date, end_date: d
         log_event("FIRESTORE_FETCH_FAIL", f"Produto '{product_name}' desconhecido para query.")
         return pd.DataFrame()
 
-    # 2. Converte datas para datetime para a query do Firestore
     start_datetime = datetime.combine(start_date, time.min)
     end_datetime = datetime.combine(end_date, time.max)
 
-    # 3. Executa a query filtrada no Firestore
     try:
         query_ref = st.session_state['db'].collection(collection_name)
-        
-        # FILTRA NO LADO DO BANCO DE DADOS
         query_ref = query_ref.where(DATA_COL, '>=', start_datetime)
         query_ref = query_ref.where(DATA_COL, '<=', end_datetime)
-        
-        # Limite de segurança para evitar custos excessivos
         docs = query_ref.limit(20000).stream() 
-        
         data_list = [doc.to_dict() for doc in docs]
 
         if not data_list: 
@@ -215,12 +197,11 @@ def get_raw_data_from_firestore(product_name: str, start_date: date, end_date: d
 
         df = pd.DataFrame(data_list)
         
-        # 4. Converte colunas de data (que vêm como Timestamps) para datetime
         if DATA_COL in df.columns:
             df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
-            df = df.dropna(subset=[DATA_COL]) # Garante que datas nulas sejam removidas
+            df = df.dropna(subset=[DATA_COL])
         else:
-            return pd.DataFrame() # Coluna de data não encontrada nos dados retornados
+            return pd.DataFrame()
 
         return df
 
@@ -232,22 +213,17 @@ def get_raw_data_from_firestore(product_name: str, start_date: date, end_date: d
 @st.cache_data(ttl=600, show_spinner=False)
 def get_latest_aggregated_data(product_name: str, start_date: date, end_date: date):
     """
-    **[FUNÇÃO REFATORADA]**
     Busca os dados RAW (já filtrados) e os AGREGA para os gráficos.
     """
     
-    # 1. Se for Asto ou Eliq, dispara o salvamento/cache da API
-    # (Em produção, isso seria um job agendado, mas aqui simula a atualização)
     if product_name in ['Asto', 'Eliq']:
         fetch_api_and_save(product_name, start_date, end_date)
     
-    # 2. Busca os dados RAW já filtrados por data no Firestore
     df = get_raw_data_from_firestore(product_name, start_date, end_date)
     
     if df.empty:
         return pd.DataFrame()
 
-    # 3. AGREGAÇÃO
     try:
         if product_name == 'Bionio':
             DATA_COL = 'data_da_criação_do_pedido'
@@ -273,7 +249,6 @@ def get_latest_aggregated_data(product_name: str, start_date: date, end_date: da
             ).reset_index()
             
             df_agg['Mês'] = df_agg[DATA_COL].astype(str)
-            
             df_agg['Receita'] = pd.to_numeric(df_agg['Receita'], errors='coerce')
             df_agg['Taxa_Media'] = pd.to_numeric(df_agg['Taxa_Media'], errors='coerce')
 
@@ -303,39 +278,55 @@ def get_latest_aggregated_data(product_name: str, start_date: date, end_date: da
         log_event("DATA_AGGREGATION_FAIL", f"Falha ao agregar dados de {product_name}: {e}")
         return pd.DataFrame()
 
-# Adicione esta função ao final do seu arquivo utils/data_processing.py
+# --- [FUNÇÃO ATUALIZADA/SUBSTITUÍDA] ---
 
-@st.cache_data(ttl=3600, show_spinner="Buscando lista de clientes...")
-def get_unique_clients_from_raw_data():
+@st.cache_data(ttl=600, show_spinner="Buscando lista de clientes...")
+def get_all_clients_with_products():
     """
-    [NOVO] Busca todos os clientes (empresas) únicos nos dados brutos
-    para vincular aos consultores.
+    [ATUALIZADO] Busca todos os clientes (empresas) únicos nos dados brutos
+    e retorna um DataFrame com o cliente e o produto de origem.
     """
-    # Define um período de tempo longo para buscar todos os clientes
-    # Em um app real, isso poderia ser uma coleção 'empresas' separada.
     start_date = date(2020, 1, 1)
     end_date = date(2099, 12, 31)
     
-    clients = set()
+    all_clients_dfs = []
 
-    # 1. Busca clientes do Rovema Pay
-    df_rovemapay_raw = get_raw_data_from_firestore('Rovema Pay', start_date, end_date)
-    if not df_rovemapay_raw.empty:
-        # Tenta usar 'cnpj' primeiro, se não, 'cliente'
-        if 'cnpj' in df_rovemapay_raw.columns:
-            clients.update(df_rovemapay_raw['cnpj'].dropna().unique())
-        elif 'cliente' in df_rovemapay_raw.columns:
-            clients.update(df_rovemapay_raw['cliente'].dropna().unique())
+    # Mapeamento de Produto -> Coluna de Cliente
+    # (Centralize a lógica de qual coluna usar para identificar o cliente)
+    product_client_column_map = {
+        'Rovema Pay': 'cnpj', # ou 'cliente' se 'cnpj' não existir
+        'Bionio': 'cnpj',     # ou 'cliente'
+        'Asto': 'cnpj',       # ou 'cliente'
+        'Eliq': 'cnpj_posto'
+    }
+
+    for product, client_col in product_client_column_map.items():
+        df_raw = get_raw_data_from_firestore(product, start_date, end_date)
+        
+        if not df_raw.empty:
+            # Tenta a coluna principal
+            if client_col in df_raw.columns:
+                df_product_clients = df_raw[[client_col]].copy()
+                df_product_clients = df_product_clients.rename(columns={client_col: 'client_id'})
             
-    # 2. Busca clientes do Bionio
-    df_bionio_raw = get_raw_data_from_firestore('Bionio', start_date, end_date)
-    if not df_bionio_raw.empty:
-        # (Assumindo que Bionio também tenha uma coluna 'cliente' ou 'cnpj')
-        if 'cnpj' in df_bionio_raw.columns:
-            clients.update(df_bionio_raw['cnpj'].dropna().unique())
-        elif 'cliente' in df_bionio_raw.columns:
-             clients.update(df_bionio_raw['cliente'].dropna().unique())
-             
-    # Adicione aqui lógicas para 'Asto' e 'Eliq' se eles também tiverem clientes
-    
-    return sorted(list(clients))
+            # Fallback para 'cliente' ou 'cnpj' genérico se a coluna principal falhar
+            elif 'cnpj' in df_raw.columns:
+                df_product_clients = df_raw[['cnpj']].copy()
+                df_product_clients = df_product_clients.rename(columns={'cnpj': 'client_id'})
+            elif 'cliente' in df_raw.columns:
+                df_product_clients = df_raw[['cliente']].copy()
+                df_product_clients = df_product_clients.rename(columns={'cliente': 'client_id'})
+            else:
+                # Produto não tem coluna de cliente identificável
+                continue
+
+            df_product_clients['product'] = product
+            df_product_clients = df_product_clients.dropna(subset=['client_id'])
+            all_clients_dfs.append(df_product_clients)
+
+    if not all_clients_dfs:
+        return pd.DataFrame(columns=['client_id', 'product'])
+
+    # Combina todos os dataframes e remove duplicatas (ex: mesmo cliente no Bionio e RovemaPay)
+    final_df = pd.concat(all_clients_dfs).drop_duplicates()
+    return final_df
