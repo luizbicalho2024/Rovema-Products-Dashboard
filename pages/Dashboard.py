@@ -10,7 +10,6 @@ from utils.data_processing import fetch_asto_data, fetch_eliq_data, get_latest_u
 def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
     """Calcula as métricas principais para o header."""
     
-    # Receita: Soma da receita Rovema Pay + Valor Bruto Bionio + Receita Asto
     rovema_revenue = rovemapay_df['Receita'].sum() if not rovemapay_df.empty else 0
     bionio_value = bionio_df['Valor Total Pedidos'].sum() if not bionio_df.empty else 0
     asto_revenue = asto_df['Receita'].sum() if not asto_df.empty else 0
@@ -18,7 +17,6 @@ def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
     total_revenue_sim = 2_146_293.35 # Valor simulado do PDF
     nossa_receita = rovema_revenue + asto_revenue # Receita da empresa (margem dos serviços)
     
-    # Margem Média: Custo Total Percentual
     margem_media = rovemapay_df['Taxa_Media'].mean() if not rovemapay_df.empty else 0.0
     
     return total_revenue_sim, nossa_receita, margem_media
@@ -71,28 +69,49 @@ def dashboard_page():
 
     st.sidebar.title("Filtros")
     
-    # Filtros de Data (Top-of-page no PDF)
+    # Filtros de Data (Requisitado: Data início / Data fim)
     default_end_date = date(2025, 10, 31)
     default_start_date = default_end_date - timedelta(days=90)
     
+    # Colunas de data (na sidebar para replicar o layout do PDF)
     start_date = st.sidebar.date_input("Data início", default_start_date)
     end_date = st.sidebar.date_input("Data fim", default_end_date)
     
-    # Filtros de Contexto (Replicando o "Todas/Todos" do PDF)
-    st.sidebar.selectbox("Bandeira", ["Todas", "Pix", "Débito", "Crédito"])
-    st.sidebar.selectbox("Adquirente", ["Todos", "Getnet", "Cielo", "Stone"])
-    st.sidebar.selectbox("EC/Cliente", ["Todas", "Posto Sol Nascente", "Supermercado Real"])
+    st.sidebar.markdown("---")
+
+    # Requisitado: Produtos
+    st.sidebar.multiselect(
+        "Produtos", 
+        ["Eliq", "Asto", "Bionio", "Rovema Pay"],
+        default=["Eliq", "Asto", "Bionio", "Rovema Pay"],
+        help="Filtra dados pelos produtos da empresa."
+    )
+
+    # Requisitado: Meios de Pagamento
+    st.sidebar.multiselect(
+        "Meios de Pagamento", 
+        ["Crédito", "Débito", "Pix"],
+        default=["Crédito", "Débito", "Pix"],
+        help="Filtra transações pelo tipo de meio de pagamento."
+    )
+
+    # Requisitado: Consultores (Baseado nos nomes simulados do PDF)
+    st.sidebar.selectbox(
+        "Consultores", 
+        ["Todos", "Leandro", "Fernanda", "Yure", "Lorrana"],
+        help="Filtra dados pela carteira de consultores."
+    )
+    
+    st.sidebar.markdown("---")
     
     # Botão Atualizar
     if st.sidebar.button("Atualizar"):
         st.session_state['update_counter'] += 1
-        st.toast("Dashboard atualizado com novos filtros!")
-        # Força o rerender para aplicar os filtros (mesmo que mock)
+        st.toast("Dashboard atualizado!")
         st.rerun() 
     
-    st.sidebar.markdown("---")
     
-    # Forçar a reexecução do cache (usando o counter para simular a aplicação do filtro)
+    # Carregamento de Dados (usa o update_counter para invalidar o cache)
     @st.cache_data(ttl=60, show_spinner=False)
     def load_data(start_date, end_date, update_counter):
         """Carrega todos os dados, garantindo que o cache seja invalidado pelo botão Atualizar."""
@@ -115,8 +134,8 @@ def dashboard_page():
     col_m1.metric("Transacionado (Bruto)", f"R$ {valor_transacionado_sim:,.2f}", delta="+142.49% vs. trimestre anterior")
     col_m2.metric("Nossa Receita", f"R$ {nossa_receita:,.2f}")
     col_m3.metric("Margem Média", f"{margem_media:.2f}%")
-    col_m4.metric("Clientes Ativos", "99") # Simulado
-    col_m5.metric("Clientes em Queda", "16") # Simulado
+    col_m4.metric("Clientes Ativos", "99")
+    col_m5.metric("Clientes em Queda", "16")
     
     st.markdown("---")
 
@@ -161,8 +180,9 @@ def dashboard_page():
             
         st.subheader("Receita por Carteira")
         
+        # Mapeando os 4 produtos como as carteiras (Leandro, Fernanda, etc. são simulados no PDF)
         carteira_data = {
-            'Carteira': ['RovemaPay', 'Bionio', 'Asto (Simulado)', 'Eliq (Simulado)'],
+            'Carteira': ['RovemaPay', 'Bionio', 'Asto', 'Eliq'],
             'Receita Total': [nossa_receita, bionio_df_db['Valor Total Pedidos'].sum() if not bionio_df_db.empty else 0, asto_df['Receita'].sum(), eliq_df['valor_total'].sum() * 0.05]
         }
         carteira_df = pd.DataFrame(carteira_data)
@@ -176,6 +196,7 @@ def dashboard_page():
             st.altair_chart(carteira_chart, use_container_width=True)
         else:
             st.warning("Dados insuficientes para Receita por Carteira.")
+
 
     st.markdown("---")
 
@@ -211,7 +232,7 @@ def dashboard_page():
         st.subheader("Clientes e Crescimento")
         st.dataframe(detalhamento_df.rename(columns={'Crescimento': 'Crescimento %'}), hide_index=True, use_container_width=True)
         st.markdown("Mostrando 1 a 10 de 99 clientes | [Anterior] [Próxima]")
-        st.button("Exportar CSV") # O botão está agora dentro da coluna
+        st.button("Exportar CSV")
         
     # D2: Insights
     with col_d2:
