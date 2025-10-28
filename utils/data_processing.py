@@ -62,19 +62,24 @@ def process_uploaded_file(uploaded_file, product_name):
         if is_csv:
             # Tenta leituras robustas para CSV
             try:
-                df = pd.read_csv(uploaded_file, decimal=',', sep=';', thousands='.', header=0)
+                # Tenta formato brasileiro (;) com codificação Latin-1 (para caracteres regionais)
+                df = pd.read_csv(uploaded_file, decimal=',', sep=';', thousands='.', header=0, encoding='latin-1')
+            except UnicodeDecodeError:
+                uploaded_file.seek(0)
+                # Tenta formato brasileiro (;) com codificação padrão (UTF-8)
+                df = pd.read_csv(uploaded_file, decimal=',', sep=';', thousands='.', header=0, encoding='utf-8')
             except Exception:
                 uploaded_file.seek(0)
+                # Fallback para leitura padrão (vírgula)
                 df = pd.read_csv(uploaded_file, header=0)
         else: # XLSX
             uploaded_file.seek(0)
-            # Lê o Excel, assumindo header na primeira linha
             df = pd.read_excel(uploaded_file, header=0) 
         
-        # CRITICAL FIX 1: Limpa e padroniza (lowercase e underscore) os nomes das colunas
+        # CRITICAL FIX: Limpa e padroniza (lowercase e underscore) os nomes das colunas
         df.columns = [col.strip().lower().replace(' ', '_').replace('.', '').replace('%', '') if isinstance(col, str) else str(col).lower() for col in df.columns]
         
-        # CRITICAL FIX 2: Remove linhas e colunas totalmente vazias ou com NaN
+        # Remove linhas e colunas totalmente vazias ou com NaN
         df = df.dropna(how='all', axis=0)
         df = df.dropna(how='all', axis=1)
 
@@ -110,7 +115,6 @@ def process_bionio_data(df):
     
     df = df.dropna(subset=[VALOR_COL, DATA_COL])
     
-    # Retorna o DataFrame RAW limpo (todas as linhas).
     return df
 
 def process_rovemapay_data(df):
@@ -125,7 +129,6 @@ def process_rovemapay_data(df):
 
     if not all(col in df.columns for col in REQUIRED_COLS):
         missing = [col for col in REQUIRED_COLS if col not in df.columns]
-        # Esta exceção deve capturar o problema do cabeçalho
         raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Colunas disponíveis: {df.columns.tolist()}")
 
     # Função auxiliar para limpar e converter valores de string
