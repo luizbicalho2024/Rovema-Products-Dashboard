@@ -6,6 +6,7 @@ import requests
 import pandas as pd
 from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp 
 from datetime import date # Importa date para tipagem
+import os
 
 # --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE (ROBUSTA) ---
 
@@ -17,16 +18,24 @@ def get_credentials_dict():
     if not sa_config_readonly:
         return None, None
         
+    # CRITICAL FIX: Cria uma cópia MÚTAVEL
     sa_config = dict(sa_config_readonly)
         
     if 'private_key' in sa_config:
         key_content = sa_config['private_key']
         if isinstance(key_content, str):
+            # Limpa espaços e trata as quebras de linha
             key_content = key_content.strip().replace('\\n', '\n')
         sa_config['private_key'] = key_content
 
+    # Carrega a chave da API Web
     api_key = st.secrets.get("FIREBASE_WEB_API_KEY", "")
     api_key = api_key.strip() if isinstance(api_key, str) else None
+
+    # Fallback para variáveis de ambiente (o que o Streamlit faz)
+    if not api_key:
+        api_key = os.environ.get("FIREBASE_WEB_API_KEY", "")
+        api_key = api_key.strip() if isinstance(api_key, str) else None
 
     return sa_config, api_key
 
@@ -87,7 +96,6 @@ def login_user(email: str, password: str):
     """Autentica o usuário e recupera o papel (role) no Firestore."""
     if not FIREBASE_WEB_API_KEY:
         log_event("LOGIN_ERROR", "Chave da API Web não configurada ou vazia nos secrets.")
-        # Se a chave da API Web falhou, o Service Account também pode ter falhado
         return False, "Erro de configuração: Chave da API Web não encontrada ou está vazia."
         
     API_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
@@ -186,9 +194,7 @@ def get_all_users():
 # --- 5. FUNÇÃO: SALVAR DADOS NO FIRESTORE (API e Upload) ---
 
 def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type: str):
-    """
-    Salva o DataFrame processado (de API ou Upload) no Firestore.
-    """
+    """Salva o DataFrame processado (de API ou Upload) no Firestore."""
     if st.session_state.get('db') is None:
         return False, "Firestore não inicializado."
 
@@ -214,7 +220,6 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
             record['ingestion_timestamp'] = server_timestamp
             
             for key, value in record.items():
-                # Converte Timestamps para ISO string (Firestore não salva objetos Timestamp do Pandas)
                 if isinstance(value, pd.Timestamp):
                     record[key] = value.isoformat()
             
