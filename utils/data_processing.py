@@ -290,7 +290,8 @@ def get_latest_aggregated_data(product_name: str, start_date: date, end_date: da
         return pd.DataFrame()
 
 
-#@st.cache_data(ttl=600, show_spinner="Buscando lista de clientes...")
+# --- [FUNÇÃO CORRIGIDA] ---
+# REMOVIDA A LINHA DE CACHE: @st.cache_data(ttl=600, show_spinner="Buscando lista de clientes...")
 def get_all_clients_with_products():
     """
     [CORRIGIDO] Busca todos os clientes (empresas) únicos nos dados brutos
@@ -302,16 +303,14 @@ def get_all_clients_with_products():
     
     all_clients_dfs = []
 
-    # --- INÍCIO DA CORREÇÃO ---
     # Mapeamento de Produto -> Lista de colunas de cliente (em ordem de prioridade)
     # Baseado nas suas imagens de evidência.
     product_client_column_map = {
-        'Rovema Pay': ['cnpj', 'ec'], 
-        'Bionio': ['cnpj_da_organização', 'razão_social'],
+        'Rovema Pay': ['cnpj', 'ec'], #
+        'Bionio': ['cnpj_da_organização', 'razão_social'], #
         'Asto': ['cnpj', 'cliente'],
         'Eliq': ['cnpj_posto']
     }
-    # --- FIM DA CORREÇÃO ---
 
     for product, client_columns in product_client_column_map.items():
         
