@@ -17,9 +17,7 @@ except ImportError:
 # --- MOCKS de APIs (Asto e Eliq) ---
 
 def fetch_asto_data(start_date: str, end_date: str):
-    """
-    Simula a coleta de dados de Fatura Pagamento Fechada do Asto (API).
-    """
+    """Simula a coleta de dados de Fatura Pagamento Fechada do Asto (API)."""
     log_event("API_CALL_ASTO", f"Simulação de chamada Asto para {start_date} a {end_date}")
     
     data = [
@@ -35,9 +33,7 @@ def fetch_asto_data(start_date: str, end_date: str):
     return df.groupby('dataFimApuracao')[['valorBruto', 'Receita']].sum().reset_index()
 
 def fetch_eliq_data(start_date: str, end_date: str):
-    """
-    Simula a coleta de dados de Transações do Eliq (API).
-    """
+    """Simula a coleta de dados de Transações do Eliq (API)."""
     log_event("API_CALL_ELIQ", f"Simulação de chamada Eliq para {start_date} a {end_date}")
     
     data = [
@@ -56,27 +52,26 @@ def fetch_eliq_data(start_date: str, end_date: str):
 
 def process_uploaded_file(uploaded_file, product_name):
     """
-    Processa o arquivo CSV/Excel e o prepara para visualização de preview e salvamento.
+    Processa o arquivo, faz a limpeza, padroniza nomes de coluna e retorna
+    o DataFrame RAW (sem agregação) para salvamento completo no Firestore.
     """
     try:
         is_csv = uploaded_file.name.lower().endswith('.csv')
-        
-        # Tenta ler o arquivo de forma flexível
+        uploaded_file.seek(0)
+
         if is_csv:
-            uploaded_file.seek(0)
+            # Tenta leituras robustas para CSV
             try:
-                # Tenta leitura robusta com o separador ';'
                 df = pd.read_csv(uploaded_file, decimal=',', sep=';', thousands='.')
             except Exception:
                 uploaded_file.seek(0)
-                # Fallback para leitura padrão
                 df = pd.read_csv(uploaded_file)
         else: # XLSX
-            uploaded_file.seek(0)
-            df = pd.read_excel(uploaded_file)
+            # Lê o Excel, assumindo header na primeira linha
+            df = pd.read_excel(uploaded_file, header=0) 
         
-        # Garante que as colunas sejam strings para evitar erro de indexação e faz a limpeza inicial
-        df.columns = [col.strip() if isinstance(col, str) else str(col) for col in df.columns]
+        # CRITICAL FIX: Limpa, padroniza (lowercase e underscore) os nomes das colunas
+        df.columns = [col.strip().lower().replace(' ', '_') if isinstance(col, str) else str(col).lower() for col in df.columns]
         
         if product_name == 'Bionio':
             df_processed = process_bionio_data(df.copy())
@@ -93,110 +88,133 @@ def process_uploaded_file(uploaded_file, product_name):
         return False, f"Erro no processamento do arquivo: {e}", None 
 
 def process_bionio_data(df):
-    """Processamento específico para dados do Bionio."""
-    REQUIRED_COLS = ['Valor total do pedido', 'Data da criação do pedido']
+    """Limpa e formata os dados do Bionio. Sem agregação."""
     
-    # Validação de colunas
+    # Mapeamento de colunas padronizadas
+    VALOR_COL = 'valor_total_do_pedido'
+    DATA_COL = 'data_da_criação_do_pedido'
+    
+    REQUIRED_COLS = [VALOR_COL, DATA_COL]
+    
+    # 1. Validação de colunas
     if not all(col in df.columns for col in REQUIRED_COLS):
         missing = [col for col in REQUIRED_COLS if col not in df.columns]
-        raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Verifique o cabeçalho do arquivo.")
-        
-    df['Valor total do pedido'] = df['Valor total do pedido'].astype(str).str.replace(r'[\sR\$]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+        raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Colunas disponíveis: {df.columns.tolist()}")
+
+    # 2. Limpeza e conversão de Valor
+    df[VALOR_COL] = df[VALOR_COL].astype(str).str.replace(r'[\sR\$]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+    df[VALOR_COL] = pd.to_numeric(df[VALOR_COL], errors='coerce')
     
-    df['Valor total do pedido'] = pd.to_numeric(df['Valor total do pedido'], errors='coerce')
-    df['Data da criação do pedido'] = pd.to_datetime(df['Data da criação do pedido'], format='%d/%m/%Y', errors='coerce')
+    # 3. Conversão de Data
+    df[DATA_COL] = pd.to_datetime(df[DATA_COL], format='%d/%m/%Y', errors='coerce')
     
-    df = df.dropna(subset=REQUIRED_COLS)
+    # 4. Limpeza final
+    df = df.dropna(subset=[VALOR_COL, DATA_COL])
     
-    df_agg = df.groupby(df['Data da criação do pedido'].dt.to_period('M'))['Valor total do pedido'].sum().reset_index()
-    df_agg['Mês'] = df_agg['Data da criação do pedido'].astype(str)
-    return df_agg.rename(columns={'Valor total do pedido': 'Valor Total Pedidos'}).drop(columns=['Data da criação do pedido'])
+    # Retorna o DataFrame RAW limpo (todas as linhas).
+    return df
 
 def process_rovemapay_data(df):
-    """Processamento específico para dados do Rovema Pay (MAIS ROBUSTO)."""
-    REQUIRED_COLS = ['Liquido', 'Bruto', 'Venda', 'Status']
+    """Limpa e formata os dados do Rovema Pay. Sem agregação."""
     
-    # Validação de colunas
+    # Mapeamento de colunas padronizadas
+    LIQUIDO_COL = 'liquido'
+    BRUTO_COL = 'bruto'
+    VENDA_COL = 'venda'
+    STATUS_COL = 'status'
+    
+    REQUIRED_COLS = [LIQUIDO_COL, BRUTO_COL, VENDA_COL, STATUS_COL]
+
+    # 1. Validação de colunas
     if not all(col in df.columns for col in REQUIRED_COLS):
         missing = [col for col in REQUIRED_COLS if col not in df.columns]
-        raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Verifique o cabeçalho do arquivo.")
-        
+        raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Colunas disponíveis: {df.columns.tolist()}")
+
     # Função auxiliar para limpar e converter valores de string (mais defensiva)
     def clean_value(series_key):
         series = df.get(series_key)
-        if series is None:
-            return pd.Series([np.nan] * len(df))
+        if series is None: return pd.Series([np.nan] * len(df))
             
         if series.dtype == 'object':
-            # Usa .fillna('') para evitar erros de string em células vazias
             cleaned = series.fillna('').astype(str).str.replace(r'[\sR\$\%]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
             return cleaned
-        return series
+        return cleaned
         
-    # Conversão de colunas de valor
-    df['Liquido'] = pd.to_numeric(clean_value('Liquido'), errors='coerce')
-    df['Bruto'] = pd.to_numeric(clean_value('Bruto'), errors='coerce')
+    # 2. Conversão de colunas de valor
+    df[LIQUIDO_COL] = pd.to_numeric(clean_value(LIQUIDO_COL), errors='coerce')
+    df[BRUTO_COL] = pd.to_numeric(clean_value(BRUTO_COL), errors='coerce')
+    df['taxa_cliente'] = pd.to_numeric(clean_value('taxa_cliente'), errors='coerce')
+    df['taxa_adquirente'] = pd.to_numeric(clean_value('taxa_adquirente'), errors='coerce')
     
-    # As colunas de taxa podem estar ausentes sem quebrar o processamento principal, mas são usadas no cálculo
-    df['Taxa Cliente'] = pd.to_numeric(clean_value('Taxa Cliente'), errors='coerce')
-    df['Taxa Adquirente'] = pd.to_numeric(clean_value('Taxa Adquirente'), errors='coerce')
+    # 3. Conversão de Data
+    df[VENDA_COL] = pd.to_datetime(df.get(VENDA_COL), errors='coerce')
     
-    # Conversão de Data
-    df['Venda'] = pd.to_datetime(df.get('Venda'), errors='coerce')
+    # 4. Limpeza: Remove linhas com valores nulos nas colunas críticas
+    df = df.dropna(subset=[BRUTO_COL, LIQUIDO_COL, VENDA_COL])
     
-    # Limpeza: Remove linhas com valores nulos nas colunas críticas
-    df = df.dropna(subset=REQUIRED_COLS)
+    # 5. Cálculo das colunas de Receita e Custo_Total_Perc (para salvar com o dado)
+    df['receita'] = df[BRUTO_COL] - df[LIQUIDO_COL]
+    df['custo_total_perc'] = np.where(df[BRUTO_COL] != 0, (df['receita'] / df[BRUTO_COL]) * 100, 0)
     
-    # Cálculo da Receita (MDR + Spread)
-    df['Receita'] = df['Bruto'] - df['Liquido']
-    
-    # Cálculo do Custo_Total_Perc (Defensivo contra divisão por zero)
-    df['Custo_Total_Perc'] = np.where(df['Bruto'] != 0, (df['Receita'] / df['Bruto']) * 100, 0)
-    
-    # Agrupamento para o dashboard
-    df_agg = df.groupby([df['Venda'].dt.to_period('M'), 'Status']).agg(
-        Liquido=('Liquido', 'sum'),
-        Receita=('Receita', 'sum'),
-        Taxa_Media=('Custo_Total_Perc', 'mean')
-    ).reset_index()
-    
-    df_agg['Mês'] = df_agg['Venda'].astype(str)
-    return df_agg.drop(columns=['Venda'])
+    # Retorna o DataFrame RAW limpo (todas as linhas).
+    return df
 
-# --- FUNÇÃO: BUSCAR DADOS DO FIRESTORE ---
 
-@st.cache_data(ttl=600) # Cache de 10 minutos para dados do Firestore
+# --- FUNÇÃO: BUSCAR DADOS DO FIRESTORE E AGREGAR ---
+
+@st.cache_data(ttl=600) 
 def get_latest_uploaded_data(product_name):
     """
-    Busca todos os dados da coleção de um produto no Firestore e retorna como DataFrame.
+    Busca todos os dados RAW da coleção do Firestore e AGGREGA para o Dashboard.
     """
-    if 'db' not in st.session_state:
-        return pd.DataFrame()
-        
+    if st.session_state.get('db') is None: return pd.DataFrame()
     collection_name = f"data_{product_name.lower()}"
     
     try:
+        # Busca até 1000 documentos para evitar timeout (idealmente, use filtros)
         docs = st.session_state['db'].collection(collection_name).limit(1000).stream()
         data_list = []
         for doc in docs:
             data = doc.to_dict()
             data_list.append(data)
 
-        if not data_list:
-            return pd.DataFrame()
+        if not data_list: return pd.DataFrame()
 
         df = pd.DataFrame(data_list)
         
-        # Garante a conversão correta de tipos para o Dashboard
-        if product_name == 'Bionio' and 'Valor Total Pedidos' in df.columns:
-            df['Valor Total Pedidos'] = pd.to_numeric(df['Valor Total Pedidos'], errors='coerce')
+        # --- NOVO BLOCO: AGREGAÇÃO FEITA AQUI, NO CONSUMIDOR ---
+        if product_name == 'Bionio':
+            # 1. Converte a coluna de data
+            if 'data_da_criação_do_pedido' not in df.columns: return pd.DataFrame()
+                
+            df['data_da_criação_do_pedido'] = pd.to_datetime(df['data_da_criação_do_pedido'], errors='coerce')
+            df = df.dropna(subset=['data_da_criação_do_pedido', 'valor_total_do_pedido'])
             
-        elif product_name == 'RovemaPay' and 'Receita' in df.columns:
-            df['Receita'] = pd.to_numeric(df['Receita'], errors='coerce')
-            df['Liquido'] = pd.to_numeric(df['Liquido'], errors='coerce')
-            df['Taxa_Media'] = pd.to_numeric(df['Taxa_Media'], errors='coerce')
+            # 2. Agregação
+            df_agg = df.groupby(df['data_da_criação_do_pedido'].dt.to_period('M'))['valor_total_do_pedido'].sum().reset_index()
+            df_agg['Mês'] = df_agg['data_da_criação_do_pedido'].astype(str)
+            return df_agg.rename(columns={'valor_total_do_pedido': 'Valor Total Pedidos'}).drop(columns=['data_da_criação_do_pedido'])
+            
+        elif product_name == 'RovemaPay':
+            # Validação das colunas salvas
+            REQUIRED = ['venda', 'receita', 'liquido', 'custo_total_perc', 'status']
+            if not all(col in df.columns for col in REQUIRED): return pd.DataFrame()
+                
+            # 1. Converte a coluna de data
+            df['venda'] = pd.to_datetime(df['venda'], errors='coerce')
+            df = df.dropna(subset=['venda'])
+            
+            # 2. Agregação
+            df_agg = df.groupby([df['venda'].dt.to_period('M'), 'status']).agg(
+                Liquido=('liquido', 'sum'),
+                Receita=('receita', 'sum'),
+                Taxa_Media=('custo_total_perc', 'mean')
+            ).reset_index()
+            
+            df_agg['Mês'] = df_agg['venda'].astype(str)
+            return df_agg.drop(columns=['venda']).dropna()
 
-        return df.dropna()
+        return pd.DataFrame()
 
     except Exception as e:
         log_event("FIRESTORE_FETCH_FAIL", f"Falha ao buscar dados de {product_name} no Firestore: {e}")
