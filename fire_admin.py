@@ -70,7 +70,7 @@ def initialize_firebase():
         return True
         
     except Exception as e:
-        print(f"Erro Crítico de Inicialização do Firebase: {e}")
+        print(f"Erro Crítico de Inicialização do Firebase: {e}") # Já imprime o erro aqui
         st.error(f"Erro ao inicializar o Firebase: Falha na validação das credenciais. Verifique o secrets.toml. Erro: {e}")
         # Garante que o estado seja limpo se a inicialização falhar
         st.session_state['db'] = None
@@ -83,6 +83,7 @@ def log_event(action: str, details: str = ""):
     """Registra um evento de log no Firestore."""
     db = st.session_state.get('db')
     if db is None:
+        print(f"WARN: DB nulo ao tentar logar: {action} - {details}") # Log no console
         return
     
     user_email = st.session_state.get('user_email', 'SISTEMA')
@@ -95,8 +96,9 @@ def log_event(action: str, details: str = ""):
     }
     try:
         db.collection('logs').add(log_entry)
-    except Exception:
+    except Exception as e:
         st.toast(f"Não foi possível registrar o log.", icon="⚠️")
+        print(f"ERRO ao registrar log: {e}") # Adicionado
 
 
 # --- 3. FUNÇÕES DE AUTENTICAÇÃO (Login e Logout) ---
@@ -127,7 +129,7 @@ def login_user(email: str, password: str):
             if not initialize_firebase():
                 log_event("LOGIN_ERROR", "Firestore indisponível devido a falha nas credenciais iniciais.")
                 return False, "Erro crítico de serviço: Contate o administrador."
-            db = st.session_state.get('db')
+            db = st.session_state.get('db') # Tenta pegar novamente após reinicializar
 
         user_doc = db.collection('users').document(user_uid).get()
         if not user_doc.exists:
@@ -160,10 +162,12 @@ def login_user(email: str, password: str):
             return False, "E-mail ou senha incorretos."
         
         log_event("LOGIN_ERROR", f"Erro HTTP crítico de login para {email}: {error_code}")
+        print(f"ERRO HTTP Login ({email}): {error_code} | Response: {e.response.text}") # Adicionado
         return False, f"Erro na autenticação. Contate o administrador. (Código: {error_code})"
     
     except Exception as e:
         log_event("LOGIN_ERROR", f"Erro inesperado de login para {email}: {e}")
+        print(f"ERRO Inesperado Login ({email}): {e}") # Adicionado
         return False, "Erro inesperado na autenticação. Tente novamente."
 
 def logout_user():
@@ -209,6 +213,7 @@ def create_user(email, password, role, name):
         return True, f"Usuário {email} criado com sucesso! UID: {user.uid}"
     except Exception as e:
         log_event("ADMIN_ACTION_FAIL", f"Falha ao criar usuário {email}: {e}")
+        print(f"ERRO Create User ({email}): {e}") # Adicionado
         return False, f"Erro ao criar usuário: {e}"
 
 def update_user_details(uid: str, data_dict: dict):
@@ -225,6 +230,7 @@ def update_user_details(uid: str, data_dict: dict):
         return True, "Usuário atualizado com sucesso."
     except Exception as e:
         log_event("ADMIN_ACTION_FAIL", f"Falha ao atualizar usuário {uid}: {e}")
+        print(f"ERRO Update User ({uid}): {e}") # Adicionado
         return False, f"Erro ao atualizar usuário: {e}"
 
 
@@ -256,6 +262,7 @@ def get_all_users(role_filter: str = None):
         return user_list
     except Exception as e:
         st.error(f"Erro ao buscar usuários: {e}")
+        print(f"ERRO Firestore (Users): {e}") # Adicionado para visibilidade no console
         return []
 
 def get_all_consultores():
@@ -321,6 +328,7 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
     
     except Exception as e:
         log_event("DATA_SAVE_FAIL", f"Falha ao salvar dados de {product_name} ({source_type}): {e}")
+        print(f"ERRO Save Data ({product_name}): {e}") # Adicionado
         return False, f"Erro ao salvar dados de {product_name} no Firestore: {e}"
 
 # Cria aliases
