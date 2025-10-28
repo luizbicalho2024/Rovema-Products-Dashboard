@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import date, timedelta
 from fire_admin import log_event
 from utils.data_processing import fetch_asto_data, fetch_eliq_data, get_latest_uploaded_data
+from pandas.api.types import is_datetime64_any_dtype as is_datetime
 
 # --- Funções Auxiliares de Visualização (Mapeando o PDF) ---
 
@@ -113,7 +114,7 @@ def dashboard_page():
             fetch_asto_data(start_date, end_date),
             fetch_eliq_data(start_date, end_date),
             get_latest_uploaded_data('Bionio', start_date, end_date),
-            get_latest_uploaded_data('RovemaPay', start_date, end_date)
+            get_latest_uploaded_data('Rovema Pay', start_date, end_date)
         )
 
     asto_df, eliq_df, bionio_df_db, rovemapay_df_db = load_data(start_date, end_date, st.session_state['update_counter'])
@@ -185,7 +186,14 @@ def dashboard_page():
             
             # 2. ASTO (Cria o Mês e combina)
             asto_temp = asto_df.rename(columns={'dataFimApuracao': 'Mês_date', 'valorBruto': 'Liquido', 'Receita': 'Receita'}).copy()
-            asto_temp['Mês'] = pd.to_datetime(asto_temp['Mês_date']).dt.to_period('M').astype(str)
+            
+            # FIX: Cria a coluna 'Mês' a partir da coluna de data correta
+            if is_datetime(asto_temp['Mês_date']):
+                asto_temp['Mês'] = asto_temp['Mês_date'].dt.to_period('M').astype(str)
+            else:
+                 # Fallback, embora os mocks garantam que é datetime
+                 asto_temp['Mês'] = asto_temp['Mês_date'].astype(str).str[:7]
+            
             asto_long = asto_temp.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
             
             final_evolucao_df = pd.concat([rovema_long, asto_long]).groupby(['Mês', 'Métrica'])['Valor'].sum().reset_index()
@@ -260,7 +268,7 @@ def dashboard_page():
     # R1: TOP 10 QUEDA (Estático)
     with col_r1:
         st.subheader("Top 10 Queda")
-        st.dataframe(ranking_queda_df[['Cliente', 'CNPJ', 'Variação']].rename(columns={'Variação': 'Variação': 'Variação %'}), hide_index=True, use_container_width=True)
+        st.dataframe(ranking_queda_df[['Cliente', 'CNPJ', 'Variação']].rename(columns={'Variação': 'Variação %'}), hide_index=True, use_container_width=True)
 
     # R2: TOP 10 CRESCIMENTO (Estático)
     with col_r2:
@@ -296,7 +304,4 @@ def dashboard_page():
 
 
 # Garante que a função da página é chamada
-if st.session_state.get('authenticated'):
-    dashboard_page()
-else:
-    pass
+if st.session_state.get('
