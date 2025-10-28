@@ -1,0 +1,5 @@
+# .streamlit/config.toml
+
+[theme]
+# Força o tema light padrão do Streamlit
+base = "light"
