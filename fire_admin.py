@@ -1,48 +1,41 @@
 import streamlit as st
 import firebase_admin
-from firebase_admin import credentials, auth, firestore, storage
+from firebase_admin import credentials, auth, firestore
 import json
 import requests
-import pandas as pd # Adicionado para uso em funções de Logs/Gestão
-from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp # Renomeado para uso limpo
+import pandas as pd
+from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp 
 
 # --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE ---
 
 @st.cache_resource
 def get_web_api_key():
-    """Busca a chave da API Web dos secrets e verifica sua existência."""
-    api_key = st.secrets.get("FIREBASE_WEB_API_KEY")
-    if not api_key:
-        # Tenta buscar a chave caso ela tenha sido salva como parte do dicionário JSON
-        api_key = st.secrets.get("firebase_service_account", {}).get("FIREBASE_WEB_API_KEY")
-    return api_key
+    return st.secrets.get("FIREBASE_WEB_API_KEY")
 
 FIREBASE_WEB_API_KEY = get_web_api_key()
 
 @st.cache_resource
 def initialize_firebase():
-    """Inicializa o Firebase Admin SDK usando Streamlit Secrets."""
+    """Inicializa o Firebase Admin SDK e o Firestore."""
     
     if "firebase_service_account" not in st.secrets:
-        st.error("ERRO: As credenciais do Firebase (JSON) não foram encontradas no Secrets.")
+        st.error("ERRO: Credenciais do Service Account não encontradas.")
         return None, None, None, None
 
     try:
         cred_dict = dict(st.secrets["firebase_service_account"])
         
-        # Trata quebras de linha na chave privada
         if 'private_key' in cred_dict:
             cred_dict['private_key'] = cred_dict['private_key'].replace('\\n', '\n')
             
         cred = credentials.Certificate(cred_dict)
 
         if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred, {
-                'storageBucket': f"{cred_dict['project_id']}.appspot.com"
-            })
+            # Inicializa o app SEM o storageBucket
+            firebase_admin.initialize_app(cred)
             
         db = firestore.client()
-        bucket = storage.bucket()
+        bucket = None # Storage foi removido
         
         st.session_state['db'] = db
         st.session_state['bucket'] = bucket
@@ -71,9 +64,9 @@ def log_event(action: str, details: str = ""):
     }
     try:
         st.session_state['db'].collection('logs').add(log_entry)
-    except Exception as e:
-        # Usa st.toast para logs não críticos, evitando poluir o console
-        st.toast(f"Não foi possível registrar o log: {e}", icon="⚠️")
+    except Exception:
+        st.toast(f"Não foi possível registrar o log.", icon="⚠️")
+
 
 # --- 3. FUNÇÕES DE AUTENTICAÇÃO (Login e Logout) ---
 
@@ -95,9 +88,8 @@ def login_user(email: str, password: str):
     }
 
     try:
-        # 1. Autenticação de Senha (Firebase REST API)
         response = requests.post(API_URL, json=payload)
-        response.raise_for_status() # Lança exceção para status HTTP de erro (4xx ou 5xx)
+        response.raise_for_status() 
         
         data = response.json()
         user_uid = data.get('localId')
@@ -106,7 +98,6 @@ def login_user(email: str, password: str):
             log_event("LOGIN_FAIL", f"Autenticação falhou para {email}. UID não retornado.")
             return False, "E-mail ou senha incorretos."
 
-        # 2. Busca o papel (Role) no Firestore usando o UID
         user_doc = st.session_state['db'].collection('users').document(user_uid).get()
         if not user_doc.exists:
             log_event("LOGIN_FAIL", f"Usuário {email} autenticado, mas sem papel de acesso (UID: {user_uid}).")
@@ -115,7 +106,6 @@ def login_user(email: str, password: str):
         user_data = user_doc.to_dict()
         role = user_data.get('role', 'Usuário')
         
-        # 3. Configura a sessão
         st.session_state['authenticated'] = True
         st.session_state['user_email'] = email
         st.session_state['user_role'] = role
@@ -128,13 +118,9 @@ def login_user(email: str, password: str):
         error_json = e.response.json()
         error_code = error_json.get('error', {}).get('message', 'UNKNOWN_ERROR')
         
-        # Códigos de erro comuns do Firebase Auth
         if error_code in ["EMAIL_NOT_FOUND", "INVALID_PASSWORD"]:
             log_event("LOGIN_FAIL", f"Tentativa de login falhou. Erro: {error_code}.")
             return False, "E-mail ou senha incorretos."
-        if error_code == "USER_DISABLED":
-             log_event("LOGIN_FAIL", f"Tentativa de login falhou. Usuário desativado: {email}.")
-             return False, "Sua conta foi desativada. Contate o administrador."
         
         log_event("LOGIN_ERROR", f"Erro HTTP crítico de login para {email}: {error_code}")
         return False, f"Erro na autenticação. Contate o administrador. (Código: {error_code})"
@@ -152,6 +138,7 @@ def logout_user():
     st.session_state['user_uid'] = None
     st.rerun()
 
+
 # --- 4. FUNÇÕES DE GERENCIAMENTO DE ACESSOS (Admin) ---
 
 def create_user(email, password, role, name):
@@ -160,10 +147,8 @@ def create_user(email, password, role, name):
         return False, "Serviços Firebase não inicializados."
     
     try:
-        # 1. Cria o usuário no Firebase Authentication (para login)
         user = auth_service.create_user(email=email, password=password)
         
-        # 2. Define o papel (role) no Firestore (para autorização)
         st.session_state['db'].collection('users').document(user.uid).set({
             'email': email,
             'role': role,
@@ -192,36 +177,57 @@ def get_all_users():
     except Exception as e:
         st.error(f"Erro ao buscar usuários: {e}")
         return []
-        
-# --- 5. FUNÇÕES DE UPLOAD E ARMAZENAMENTO ---
 
-def upload_file_and_store_ref(uploaded_file, product_name):
-    """
-    Armazena o arquivo no Storage e registra a referência no Firestore.
-    """
-    if 'bucket' not in st.session_state or 'db' not in st.session_state:
-        return False, "Storage ou Firestore não inicializados."
 
+# --- 5. FUNÇÃO: SALVAR DADOS PROCESSADOS NO FIRESTORE ---
+
+def save_processed_data_to_firestore(product_name: str, df_data: pd.DataFrame):
+    """
+    Converte o DataFrame processado em uma lista de dicionários e o salva
+    em uma nova coleção no Firestore, usando Batch Writes para eficiência.
+    """
+    if 'db' not in st.session_state:
+        return False, "Firestore não inicializado."
+
+    data_records = df_data.to_dict('records')
+    upload_metadata = {
+        'product': product_name,
+        'uploaded_by': st.session_state['user_email'],
+        'timestamp': server_timestamp,
+        'total_records': len(data_records),
+    }
+    
     try:
-        # Define o caminho do arquivo no Storage
-        file_path = f"uploads/{product_name}/{st.session_state['user_uid']}_{uploaded_file.name}"
+        # Cria um documento para rastrear este upload
+        upload_doc_ref = st.session_state['db'].collection('uploads_metadata').add(upload_metadata)
+        upload_id = upload_doc_ref[1].id if isinstance(upload_doc_ref, tuple) else upload_doc_ref.id
+
+        collection_name = f"data_{product_name.lower()}"
         
-        # Faz o upload para o Storage
-        blob = st.session_state['bucket'].blob(file_path)
-        # O rewind é crucial após a leitura inicial do Streamlit
-        blob.upload_from_file(uploaded_file, content_type=uploaded_file.type, rewind=True) 
+        batch = st.session_state['db'].batch()
         
-        # Registra o upload no Firestore
-        st.session_state['db'].collection('file_uploads').add({
-            'product': product_name,
-            'filename': uploaded_file.name,
-            'storage_path': file_path,
-            'uploaded_by': st.session_state['user_email'],
-            'timestamp': server_timestamp
-        })
+        for i, record in enumerate(data_records):
+            record['upload_id'] = upload_id 
+            record['upload_timestamp'] = server_timestamp
+            
+            # Adiciona a data de apuração como campo de índice, se existir
+            if 'Mês' in record:
+                record['period_key'] = record['Mês']
+
+            doc_ref = st.session_state['db'].collection(collection_name).document()
+            batch.set(doc_ref, record)
+            
+            # Limite do batch do Firestore é 500
+            if (i + 1) % 499 == 0:
+                batch.commit()
+                batch = st.session_state['db'].batch() # Inicia um novo batch
+                
+        # Commita os documentos restantes
+        batch.commit()
         
-        log_event("FILE_UPLOAD", f"Arquivo de {product_name} enviado para {file_path}.")
-        return True, f"Arquivo '{uploaded_file.name}' enviado com sucesso para o Firebase Storage!"
+        log_event("DATA_SAVE_SUCCESS", f"Dados de {product_name} salvos em {collection_name}. Total: {len(data_records)} registros.")
+        return True, f"Dados processados e salvos com sucesso na coleção '{collection_name}' (Total: {len(data_records)} registros)."
+    
     except Exception as e:
-        log_event("FILE_UPLOAD_FAIL", f"Falha ao enviar arquivo: {e}")
-        return False, f"Erro ao enviar arquivo: {e}"
+        log_event("DATA_SAVE_FAIL", f"Falha ao salvar dados de {product_name}: {e}")
+        return False, f"Erro ao salvar dados no Firestore: {e}"
