@@ -10,7 +10,21 @@ from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp
 
 @st.cache_resource
 def get_web_api_key():
-    return st.secrets.get("FIREBASE_WEB_API_KEY")
+    """
+    Busca a chave da API Web diretamente dos secrets, garantindo que não há 
+    espaços em branco ou erros de leitura. Esta é a leitura mais defensiva.
+    """
+    # 1. Tenta obter o valor da variável de nível superior (ideal)
+    api_key = st.secrets.get("FIREBASE_WEB_API_KEY")
+    
+    # Se a chave for uma string, remove espaços e verifica se está vazia
+    if isinstance(api_key, str):
+        api_key = api_key.strip()
+    else:
+        # Se st.secrets.get retornou None ou outro tipo (leitura TOML falhou)
+        api_key = None 
+        
+    return api_key
 
 FIREBASE_WEB_API_KEY = get_web_api_key()
 
@@ -75,6 +89,7 @@ def login_user(email: str, password: str):
     Autentica o usuário usando a REST API (para verificar a senha) 
     e recupera o papel (role) no Firestore.
     """
+    # A VERIFICAÇÃO CRÍTICA AGORA GARANTE QUE O VALOR NÃO ESTÁ VAZIO
     if not FIREBASE_WEB_API_KEY:
         log_event("LOGIN_ERROR", "Chave da API Web não configurada ou vazia nos secrets.")
         return False, "Erro de configuração: Chave da API Web não encontrada ou está vazia."
@@ -198,7 +213,6 @@ def save_processed_data_to_firestore(product_name: str, df_data: pd.DataFrame):
     }
     
     try:
-        # Cria um documento para rastrear este upload
         upload_doc_ref = st.session_state['db'].collection('uploads_metadata').add(upload_metadata)
         upload_id = upload_doc_ref[1].id if isinstance(upload_doc_ref, tuple) else upload_doc_ref.id
 
@@ -210,19 +224,16 @@ def save_processed_data_to_firestore(product_name: str, df_data: pd.DataFrame):
             record['upload_id'] = upload_id 
             record['upload_timestamp'] = server_timestamp
             
-            # Adiciona a data de apuração como campo de índice, se existir
             if 'Mês' in record:
                 record['period_key'] = record['Mês']
 
             doc_ref = st.session_state['db'].collection(collection_name).document()
             batch.set(doc_ref, record)
             
-            # Limite do batch do Firestore é 500
             if (i + 1) % 499 == 0:
                 batch.commit()
-                batch = st.session_state['db'].batch() # Inicia um novo batch
+                batch = st.session_state['db'].batch() 
                 
-        # Commita os documentos restantes
         batch.commit()
         
         log_event("DATA_SAVE_SUCCESS", f"Dados de {product_name} salvos em {collection_name}. Total: {len(data_records)} registros.")
