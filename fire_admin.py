@@ -7,8 +7,8 @@ import pandas as pd
 from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp 
 from datetime import date
 import os
-# Adicione a importação do utils/data_processing para resolver a referência circular.
-# Usamos a importação local dentro da função que precisa dela para evitar loop.
+# A lógica de 'fetch_api_and_save' foi movida para 'utils/data_processing.py'
+# para evitar dependências circulares e separar responsabilidades.
 
 # --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE (ROBUSTA) ---
 
@@ -189,6 +189,15 @@ def get_all_users():
         st.error(f"Erro ao buscar usuários: {e}")
         return []
 
+def get_all_consultores():
+    """Retorna uma lista de nomes de usuários para filtros."""
+    users = get_all_users()
+    if users:
+        # Filtra por papel se necessário, ou apenas pega nomes
+        nomes = sorted([user.get('nome', 'N/A') for user in users if user.get('nome')])
+        return ['Todos'] + nomes
+    return ['Todos']
+
 
 # --- 5. FUNÇÃO: SALVAR DADOS NO FIRESTORE (API e Upload) ---
 
@@ -218,12 +227,22 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
             record['data_source_id'] = upload_id 
             record['ingestion_timestamp'] = server_timestamp
             
+            # **MELHORIA CRÍTICA:**
+            # Removemos a conversão para 'isoformat()'.
+            # O SDK do Firebase Admin (usado no servidor) converte automaticamente
+            # objetos pd.Timestamp (ou datetime) em Timestamps nativos do Firestore.
+            # Isso é essencial para que as consultas de data (.where()) funcionem.
+            
+            # Limpa NaNs ou NaTs que não são compatíveis com JSON/Firestore
+            cleaned_record = {}
             for key, value in record.items():
-                if isinstance(value, pd.Timestamp):
-                    record[key] = value.isoformat()
+                if pd.isna(value):
+                    cleaned_record[key] = None  # Converte NaT/NaN para None
+                else:
+                    cleaned_record[key] = value
             
             doc_ref = st.session_state['db'].collection(collection_name).document()
-            batch.set(doc_ref, record)
+            batch.set(doc_ref, cleaned_record)
             
             if (i + 1) % 499 == 0:
                 batch.commit()
@@ -232,7 +251,7 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
         batch.commit()
         
         log_event("DATA_SAVE_SUCCESS", f"Dados de {product_name} ({source_type}) salvos em {collection_name}. Total: {len(data_records)} registros.")
-        return True, f"Dados de {product_name} ({source_type}) salvos com sucesso."
+        return True, f"Dados de {product_name} ({source_type}) salvos com sucesso. Total: {len(data_records)} registros."
     
     except Exception as e:
         log_event("DATA_SAVE_FAIL", f"Falha ao salvar dados de {product_name} ({source_type}): {e}")
@@ -240,26 +259,3 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
 
 # Cria aliases
 save_processed_data_to_firestore = lambda product_name, df_data: save_data_to_firestore(product_name, df_data, 'UPLOAD')
-
-@st.cache_data(ttl=3600, show_spinner="Buscando dados da API e armazenando...")
-def fetch_api_and_save(product_name: str, start_date: date, end_date: date):
-    """
-    Busca os dados via API Mock (funções em utils/data_processing), salva no Firestore e retorna o DataFrame.
-    """
-    from utils.data_processing import fetch_asto_data, fetch_eliq_data
-    
-    if product_name == 'Asto':
-        df_raw = fetch_asto_data(start_date, end_date)
-    elif product_name == 'Eliq':
-        df_raw = fetch_eliq_data(start_date, end_date)
-    else:
-        return pd.DataFrame()
-        
-    if df_raw.empty:
-        log_event("API_FETCH_EMPTY", f"API de {product_name} retornou dados vazios.")
-        return pd.DataFrame()
-        
-    # Salva o resultado no Firestore
-    success, message = save_data_to_firestore(product_name, df_raw, 'API')
-
-    return df_raw
