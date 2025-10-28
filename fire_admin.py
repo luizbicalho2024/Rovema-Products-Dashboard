@@ -11,25 +11,26 @@ from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp
 def get_credentials_dict():
     """Lê todas as credenciais do st.secrets, faz uma cópia segura e garante a limpeza."""
     
+    # 1. Carrega o Service Account (READ-ONLY)
     sa_config_readonly = st.secrets.get("firebase_service_account")
     
     if not sa_config_readonly:
         return None, None
         
-    # Cria um dicionário Python puro (mutável) a partir do objeto secrets
-    sa_config = {}
-    
-    # Limpa e copia a chave privada e outras chaves
-    for key, value in sa_config_readonly.items():
-        if key == 'private_key':
-            # FIX CRÍTICO: Limpa a chave privada removendo espaços e tratando '\n'
-            if isinstance(value, str):
-                value = value.strip().replace('\\n', '\n')
-            sa_config[key] = value
-        else:
-            sa_config[key] = value
+    # CRITICAL FIX: Cria uma cópia MÚTAVEL para evitar TypeError de atribuição (somente leitura)
+    sa_config = dict(sa_config_readonly)
+        
+    # 2. Limpeza Final da Private Key (Resolvendo "Invalid Private Key")
+    # Acessa a chave no objeto MÚTAVEL
+    if 'private_key' in sa_config:
+        key_content = sa_config['private_key']
+        # Remove espaços indesejados e trata as quebras de linha ('\n')
+        if isinstance(key_content, str):
+            key_content = key_content.strip().replace('\\n', '\n')
+        # Atribuição segura ao dicionário mutável
+        sa_config['private_key'] = key_content
 
-    # Carrega e limpa a chave da API Web (separada)
+    # 3. Carrega e limpa a Chave da API Web (Resolvendo "API Web não encontrada")
     api_key = st.secrets.get("FIREBASE_WEB_API_KEY", "")
     api_key = api_key.strip() if isinstance(api_key, str) else None
 
@@ -60,7 +61,7 @@ def initialize_firebase():
         
         return auth, db, bucket, CREDENTIALS_DICT.get('project_id')
     except Exception as e:
-        # Esta mensagem será exibida no Streamlit Cloud Logs
+        # Imprime o erro no Streamlit Cloud Logs (console)
         print(f"Erro Crítico de Inicialização do Firebase: {e}")
         st.error(f"Erro ao inicializar o Firebase: Falha na validação das credenciais.")
         return None, None, None, None
@@ -98,7 +99,6 @@ def login_user(email: str, password: str):
     """
     if not FIREBASE_WEB_API_KEY:
         log_event("LOGIN_ERROR", "Chave da API Web não configurada ou vazia nos secrets.")
-        # Se a chave da API Web falhou, o Service Account também pode ter falhado
         return False, "Erro de configuração: Chave da API Web não encontrada ou está vazia."
         
     API_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
@@ -110,7 +110,6 @@ def login_user(email: str, password: str):
     }
 
     try:
-        # 1. Tenta autenticar via REST API
         response = requests.post(API_URL, json=payload)
         response.raise_for_status() 
         
@@ -121,12 +120,10 @@ def login_user(email: str, password: str):
             log_event("LOGIN_FAIL", f"Autenticação falhou para {email}. UID não retornado.")
             return False, "E-mail ou senha incorretos."
 
-        # 2. Verifica a inicialização do DB (se falhou, erro crítico de serviço)
         if st.session_state.get('db') is None:
             log_event("LOGIN_ERROR", "Firestore indisponível devido a falha nas credenciais iniciais.")
             return False, "Erro crítico de serviço: Contate o administrador."
 
-        # 3. Busca o papel de acesso
         user_doc = st.session_state['db'].collection('users').document(user_uid).get()
         if not user_doc.exists:
             log_event("LOGIN_FAIL", f"Usuário {email} autenticado, mas sem papel de acesso (UID: {user_uid}).")
@@ -135,7 +132,6 @@ def login_user(email: str, password: str):
         user_data = user_doc.to_dict()
         role = user_data.get('role', 'Usuário')
         
-        # 4. Configura a sessão
         st.session_state['authenticated'] = True
         st.session_state['user_email'] = email
         st.session_state['user_role'] = role
