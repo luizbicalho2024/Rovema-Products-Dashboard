@@ -7,6 +7,20 @@ from utils.data_processing import fetch_asto_data, fetch_eliq_data, get_latest_u
 
 # --- Funções Auxiliares de Visualização (Mapeando o PDF) ---
 
+def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
+    """Calcula as métricas principais para o header."""
+    
+    rovema_revenue = rovemapay_df['Receita'].sum() if not rovemapay_df.empty else 0
+    bionio_value = bionio_df['Valor Total Pedidos'].sum() if not bionio_df.empty else 0
+    asto_revenue = asto_df['Receita'].sum() if not asto_df.empty else 0
+    
+    total_revenue_sim = 2_146_293.35 # Valor simulado do PDF
+    nossa_receita = rovema_revenue + asto_revenue
+    
+    margem_media = rovemapay_df['Taxa_Media'].mean() if not rovemapay_df.empty else 0.0
+    
+    return total_revenue_sim, nossa_receita, margem_media
+
 def get_ranking_data(rovemapay_df):
     """Simula a geração dos rankings de crescimento/queda e participação por bandeira."""
         
@@ -44,7 +58,6 @@ def dashboard_page():
         return
 
     st.title("ROVEMA BANK: Dashboard de Transações")
-    st.caption("Filtros Ativos na Barra Lateral")
     log_event("VIEW_DASHBOARD", "Visualizando o dashboard principal.")
     
     # --- 0. FILTROS NA BARRA LATERAL (Sidebar) ---
@@ -54,7 +67,7 @@ def dashboard_page():
 
     st.sidebar.title("Filtros")
     
-    # Filtros de Data
+    # Filtros de Data (Requisitado: Data início / Data fim)
     default_end_date = date(2025, 10, 31)
     default_start_date = default_end_date - timedelta(days=90)
     
@@ -86,6 +99,7 @@ def dashboard_page():
     
     st.sidebar.markdown("---")
     
+    # Botão Atualizar
     if st.sidebar.button("Atualizar"):
         st.session_state['update_counter'] += 1
         st.toast("Dashboard atualizado!")
@@ -134,7 +148,7 @@ def dashboard_page():
     # 4. Eliq (Volume)
     if "Eliq" in selected_products and not eliq_df.empty:
         current_eliq_volume = eliq_df['valor_total'].sum()
-        current_valor_transacionado += current_eliq_volume
+        current_valor_transacionado += eliq_df['valor_total'].sum()
         
     
     # Métrica do Header
@@ -165,27 +179,36 @@ def dashboard_page():
     with col_g1:
         st.header("Evolução do Valor Transacionado vs Receita")
         
-        # O gráfico de evolução deve ser baseado nos produtos selecionados. Usamos o Rovema Pay como base principal.
-        if "Rovema Pay" in selected_products and not rovemapay_df_db.empty:
+        # O gráfico de evolução deve ser baseado nos produtos selecionados. 
+        if ("Rovema Pay" in selected_products and not rovemapay_df_db.empty) or ("Asto" in selected_products and not asto_df.empty):
+            
+            # Combina Rovema e Asto para a evolução
             rovema_long = rovemapay_df_db.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
             
-            evolucao_chart = alt.Chart(rovema_long).mark_line(point=True).encode(
+            # Adiciona Asto
+            asto_temp = asto_df.rename(columns={'dataFimApuracao': 'Mês', 'valorBruto': 'Liquido', 'Receita': 'Receita'}).copy()
+            asto_temp['Mês'] = asto_df['dataFimApuracao'].dt.to_period('M').astype(str)
+            asto_long = asto_temp.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
+            
+            final_evolucao_df = pd.concat([rovema_long, asto_long]).groupby(['Mês', 'Métrica'])['Valor'].sum().reset_index()
+            
+            evolucao_chart = alt.Chart(final_evolucao_df).mark_line(point=True).encode(
                 x=alt.X('Mês:O', title=''),
                 y=alt.Y('Valor', title='Valor (R$)'),
                 color='Métrica',
                 tooltip=['Mês', alt.Tooltip('Valor', format='$,.2f'), 'Métrica']
-            ).properties(title='Evolução da Receita e Volume Rovema Pay').interactive()
+            ).properties(title='Evolução da Receita e Volume').interactive()
             
             st.altair_chart(evolucao_chart, use_container_width=True)
         else:
-            st.info("Selecione 'Rovema Pay' ou 'Asto' para ver o gráfico de evolução.")
+            st.info("Selecione 'Rovema Pay' e/ou 'Asto' para ver o gráfico de evolução.")
 
     # G2: Participação por Bandeira e Receita por Carteira
     with col_g2:
         ranking_queda_df, detalhamento_df, bandeira_df = get_ranking_data(rovemapay_df_db)
         
         st.subheader("Participação por Bandeira")
-        if not bandeira_df.empty and bandeira_df['Valor'].sum() > 0:
+        if not bandeira_df.empty and bandeira_df['Valor'].sum() > 0 and ("Rovema Pay" in selected_products):
             bandeira_chart = alt.Chart(bandeira_df).mark_arc(outerRadius=80).encode(
                 theta=alt.Theta(field="Valor", type="quantitative"),
                 color=alt.Color(field="Bandeira", type="nominal"),
@@ -194,7 +217,7 @@ def dashboard_page():
             ).properties(title="")
             st.altair_chart(bandeira_chart, use_container_width=True)
         else:
-            st.warning("Dados de Bandeira insuficientes ou produto desmarcado.")
+            st.warning("Selecione 'Rovema Pay' para ver a participação por bandeira.")
             
         st.subheader("Receita por Carteira")
         
@@ -215,7 +238,6 @@ def dashboard_page():
             carteira_data['Receita Total'].append(current_asto_revenue)
         if "Eliq" in selected_products:
             carteira_data['Carteira'].append('Eliq')
-            # Eliq usa volume, mas é mapeado como "Receita Total" no gráfico
             carteira_data['Receita Total'].append(current_eliq_volume) 
         
         carteira_df = pd.DataFrame(carteira_data)
