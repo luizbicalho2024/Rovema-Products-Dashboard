@@ -2,15 +2,16 @@ import pandas as pd
 import numpy as np
 import requests
 import streamlit as st
-from datetime import datetime, date
+from datetime import datetime, date, time
 import altair as alt
 
 # Importa módulos Firebase
 try:
-    from fire_admin import log_event, db, server_timestamp, fetch_api_and_save
+    from fire_admin import log_event, db, server_timestamp, save_data_to_firestore
 except ImportError:
     def log_event(action: str, details: str = ""): pass
-    def fetch_api_and_save(product_name, start_date, end_date): return pd.DataFrame()
+    def save_data_to_firestore(product_name, df_data, source_type): return False, "DB Error"
+    db = None
 
 
 # --- MOCKS de APIs (Retorna RAW data para cache) ---
@@ -25,6 +26,7 @@ def fetch_asto_data(start_date: date, end_date: date):
         {"dataFimApuracao": "2025-07-15T00:00:00", "valorBruto": 5000.00, "valorLiquido": 4800.00},
     ]
     df = pd.DataFrame(data)
+    # Garante que os dados mocados sejam convertidos para datetime para salvar corretamente
     df['dataFimApuracao'] = pd.to_datetime(df['dataFimApuracao']).dt.normalize()
     df['Receita'] = df['valorBruto'] - df['valorLiquido']
     return df
@@ -39,8 +41,33 @@ def fetch_eliq_data(start_date: date, end_date: date):
         {"data_cadastro": "2025-07-20 10:00:00", "valor_total": 300.00, "consumo_medio": 7.0, "status": "confirmada"},
     ]
     df = pd.DataFrame(data)
+    # Garante que os dados mocados sejam convertidos para datetime para salvar corretamente
     df['data_cadastro'] = pd.to_datetime(df['data_cadastro']).dt.normalize()
     return df
+
+@st.cache_data(ttl=3600, show_spinner="Buscando dados da API e armazenando...")
+def fetch_api_and_save(product_name: str, start_date: date, end_date: date):
+    """
+    (Movido de fire_admin.py)
+    Busca os dados via API Mock, salva no Firestore e retorna o DataFrame.
+    """
+    
+    if product_name == 'Asto':
+        df_raw = fetch_asto_data(start_date, end_date)
+    elif product_name == 'Eliq':
+        df_raw = fetch_eliq_data(start_date, end_date)
+    else:
+        return pd.DataFrame()
+        
+    if df_raw.empty:
+        log_event("API_FETCH_EMPTY", f"API de {product_name} retornou dados vazios.")
+        return pd.DataFrame()
+        
+    # Salva o resultado no Firestore
+    # (Em um cenário real, isso teria lógica para evitar duplicatas)
+    success, message = save_data_to_firestore(product_name, df_raw, 'API')
+
+    return df_raw
 
 
 # --- Funções de Processamento de Arquivos ---
@@ -74,7 +101,7 @@ def process_uploaded_file(uploaded_file, product_name):
         elif product_name == 'RovemaPay':
             df_processed = process_rovemapay_data(df.copy())
         else:
-            df_processed = df.head(5)
+            df_processed = df
             
         return True, "Processamento bem-sucedido.", df_processed
         
@@ -96,7 +123,8 @@ def process_bionio_data(df):
     df[VALOR_COL] = df[VALOR_COL].astype(str).str.replace(r'[\sR\$]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
     df[VALOR_COL] = pd.to_numeric(df[VALOR_COL], errors='coerce')
     
-    df[DATA_COL] = pd.to_datetime(df[DATA_COL], format='%d/%m/%Y', errors='coerce')
+    # Converte para datetime e normaliza (remove horas)
+    df[DATA_COL] = pd.to_datetime(df[DATA_COL], format='%d/%m/%Y', errors='coerce').dt.normalize()
     
     df = df.dropna(subset=[VALOR_COL, DATA_COL])
     return df
@@ -111,7 +139,7 @@ def process_rovemapay_data(df):
 
     if not all(col in df.columns for col in REQUIRED_COLS):
         missing = [col for col in REQUIRED_COLS if col not in df.columns]
-        raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Colunas disponíveis: {df.columns.tolist()}")
+        raise ValueError(f"Colunas obrigatóbrias ausentes: {missing}. Colunas disponíveis: {df.columns.tolist()}")
 
     def clean_value(series_key):
         series = df.get(series_key)
@@ -128,7 +156,8 @@ def process_rovemapay_data(df):
     df['taxa_cliente'] = pd.to_numeric(clean_value('taxa_cliente'), errors='coerce')
     df['taxa_adquirente'] = pd.to_numeric(clean_value('taxa_adquirente'), errors='coerce')
     
-    df[VENDA_COL] = pd.to_datetime(df.get(VENDA_COL), errors='coerce')
+    # Converte para datetime e normaliza (remove horas)
+    df[VENDA_COL] = pd.to_datetime(df.get(VENDA_COL), errors='coerce').dt.normalize()
     
     df = df.dropna(subset=[BRUTO_COL, LIQUIDO_COL, VENDA_COL, STATUS_COL])
     
@@ -137,44 +166,94 @@ def process_rovemapay_data(df):
     
     return df
 
+# --- Funções de Busca e Agregação de Dados ---
 
 @st.cache_data(ttl=600, show_spinner=False)
-def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
+def get_raw_data_from_firestore(product_name: str, start_date: date, end_date: date):
     """
-    Busca todos os dados RAW da coleção do Firestore, FILTRA por data e AGGREGA.
+    **[NOVA FUNÇÃO ROBUSTA]**
+    Busca dados RAW do Firestore, FILTRANDO por data no lado do servidor.
     """
-    if st.session_state.get('db') is None: return pd.DataFrame()
+    if st.session_state.get('db') is None: 
+        return pd.DataFrame()
+
+    # 1. Define o nome da coleção e a coluna de data relevante
     collection_name = f"data_{product_name.lower().replace(' ', '_')}"
+    DATA_COL = None
+    if product_name == 'Bionio':
+        DATA_COL = 'data_da_criação_do_pedido'
+    elif product_name == 'Rovema Pay':
+        DATA_COL = 'venda'
+    elif product_name == 'Asto':
+        DATA_COL = 'dataFimApuracao'
+    elif product_name == 'Eliq':
+        DATA_COL = 'data_cadastro'
     
-    # 1. Se for Asto ou Eliq, dispara o salvamento/cache
-    if product_name in ['Asto', 'Eliq']:
-        # Esta função irá chamar a API, salvar no Firestore (cache) e retornar o RAW data
-        fetch_api_and_save(product_name, start_date, end_date)
-    
-    # 2. Busca RAW DATA DO FIRESTORE (agora inclui os dados cacheados da API)
+    if not DATA_COL:
+        log_event("FIRESTORE_FETCH_FAIL", f"Produto '{product_name}' desconhecido para query.")
+        return pd.DataFrame()
+
+    # 2. Converte datas para datetime para a query do Firestore
+    start_datetime = datetime.combine(start_date, time.min)
+    end_datetime = datetime.combine(end_date, time.max)
+
+    # 3. Executa a query filtrada no Firestore
     try:
-        docs = st.session_state['db'].collection(collection_name).limit(1000).stream()
+        query_ref = st.session_state['db'].collection(collection_name)
+        
+        # FILTRA NO LADO DO BANCO DE DADOS
+        query_ref = query_ref.where(DATA_COL, '>=', start_datetime)
+        query_ref = query_ref.where(DATA_COL, '<=', end_datetime)
+        
+        # Limite de segurança para evitar custos excessivos
+        docs = query_ref.limit(20000).stream() 
+        
         data_list = [doc.to_dict() for doc in docs]
 
-        if not data_list: return pd.DataFrame()
+        if not data_list: 
+            return pd.DataFrame()
 
         df = pd.DataFrame(data_list)
         
-        # 3. FILTRAGEM E AGREGAÇÃO
-        
+        # 4. Converte colunas de data (que vêm como Timestamps) para datetime
+        if DATA_COL in df.columns:
+            df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
+            df = df.dropna(subset=[DATA_COL]) # Garante que datas nulas sejam removidas
+        else:
+            return pd.DataFrame() # Coluna de data não encontrada nos dados retornados
+
+        return df
+
+    except Exception as e:
+        log_event("FIRESTORE_FETCH_FAIL", f"Falha ao buscar dados de {product_name} no Firestore: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_latest_aggregated_data(product_name: str, start_date: date, end_date: date):
+    """
+    **[FUNÇÃO REFATORADA]**
+    Busca os dados RAW (já filtrados) e os AGREGA para os gráficos.
+    """
+    
+    # 1. Se for Asto ou Eliq, dispara o salvamento/cache da API
+    # (Em produção, isso seria um job agendado, mas aqui simula a atualização)
+    if product_name in ['Asto', 'Eliq']:
+        fetch_api_and_save(product_name, start_date, end_date)
+    
+    # 2. Busca os dados RAW já filtrados por data no Firestore
+    df = get_raw_data_from_firestore(product_name, start_date, end_date)
+    
+    if df.empty:
+        return pd.DataFrame()
+
+    # 3. AGREGAÇÃO
+    try:
         if product_name == 'Bionio':
             DATA_COL = 'data_da_criação_do_pedido'
-            if DATA_COL not in df.columns: return pd.DataFrame()
-                
-            df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
-            df = df.dropna(subset=[DATA_COL, 'valor_total_do_pedido'])
-            
-            # APLICA FILTRO DE DATA
-            df = df[
-                (df[DATA_COL].dt.date >= start_date) & 
-                (df[DATA_COL].dt.date <= end_date)
-            ].copy()
-            
+            if DATA_COL not in df.columns or 'valor_total_do_pedido' not in df.columns:
+                return pd.DataFrame()
+
             df_agg = df.groupby(df[DATA_COL].dt.to_period('M'))['valor_total_do_pedido'].sum().reset_index()
             df_agg['Mês'] = df_agg[DATA_COL].astype(str)
             return df_agg.rename(columns={'valor_total_do_pedido': 'Valor Total Pedidos'}).drop(columns=[DATA_COL])
@@ -182,16 +261,8 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
         elif product_name == 'Rovema Pay':
             DATA_COL = 'venda'
             REQUIRED = ['venda', 'receita', 'liquido', 'custo_total_perc', 'status']
-            if not all(col in df.columns for col in REQUIRED): return pd.DataFrame()
-                
-            df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
-            df = df.dropna(subset=[DATA_COL])
-            
-            # APLICA FILTRO DE DATA
-            df = df[
-                (df[DATA_COL].dt.date >= start_date) & 
-                (df[DATA_COL].dt.date <= end_date)
-            ].copy()
+            if not all(col in df.columns for col in REQUIRED): 
+                return pd.DataFrame()
             
             df['status'] = df['status'].astype(str)
 
@@ -208,47 +279,26 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
 
             return df_agg.drop(columns=[DATA_COL]).dropna()
         
-        # --- Asto/Eliq Agregação (Dados RAW) ---
         elif product_name == 'Asto':
             DATA_COL = 'dataFimApuracao'
-            if DATA_COL not in df.columns: return pd.DataFrame()
-                
-            df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
-            df = df.dropna(subset=[DATA_COL])
+            if DATA_COL not in df.columns or 'valorBruto' not in df.columns or 'Receita' not in df.columns:
+                return pd.DataFrame()
             
-            # FILTRO DE DATA RAW
-            df = df[
-                (df[DATA_COL].dt.date >= start_date) & 
-                (df[DATA_COL].dt.date <= end_date)
-            ].copy()
-            
-            # Agregação para o gráfico de linha (Receita e Volume)
             df_agg = df.groupby(df[DATA_COL].dt.to_period('M'))[['valorBruto', 'Receita']].sum().reset_index()
             df_agg['Mês'] = df_agg[DATA_COL].astype(str)
-
             return df_agg
 
         elif product_name == 'Eliq':
             DATA_COL = 'data_cadastro'
-            if DATA_COL not in df.columns: return pd.DataFrame()
+            if DATA_COL not in df.columns or 'valor_total' not in df.columns or 'consumo_medio' not in df.columns:
+                return pd.DataFrame()
                 
-            df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
-            df = df.dropna(subset=[DATA_COL])
-
-            # FILTRO DE DATA RAW
-            df = df[
-                (df[DATA_COL].dt.date >= start_date) & 
-                (df[DATA_COL].dt.date <= end_date)
-            ].copy()
-            
-            # Agregação para o volume/consumo
             df_agg = df.groupby(df[DATA_COL].dt.to_period('M'))[['valor_total', 'consumo_medio']].agg({'valor_total': 'sum', 'consumo_medio': 'mean'}).reset_index()
             df_agg['Mês'] = df_agg[DATA_COL].astype(str)
-
             return df_agg
 
         return pd.DataFrame()
 
     except Exception as e:
-        log_event("FIRESTORE_FETCH_FAIL", f"Falha ao buscar dados de {product_name} no Firestore: {e}")
+        log_event("DATA_AGGREGATION_FAIL", f"Falha ao agregar dados de {product_name}: {e}")
         return pd.DataFrame()
