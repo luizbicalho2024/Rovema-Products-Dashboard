@@ -8,6 +8,7 @@ from fire_admin import log_event, db, server_timestamp
 import json 
 
 # --- MOCKS de APIs (Asto e Eliq) ---
+# ... (Mantenha as funções fetch_asto_data e fetch_eliq_data IGUAIS) ...
 
 def fetch_asto_data(start_date: str, end_date: str):
     """
@@ -44,7 +45,6 @@ def fetch_eliq_data(start_date: str, end_date: str):
     df['data_cadastro'] = pd.to_datetime(df['data_cadastro']).dt.normalize()
     return df.groupby('data_cadastro')[['valor_total', 'consumo_medio']].agg({'valor_total': 'sum', 'consumo_medio': 'mean'}).reset_index()
 
-
 # --- Funções de Processamento de Arquivos ---
 
 def process_uploaded_file(uploaded_file, product_name):
@@ -55,16 +55,17 @@ def process_uploaded_file(uploaded_file, product_name):
         is_csv = uploaded_file.name.lower().endswith('.csv')
         
         if is_csv:
+            uploaded_file.seek(0)
+            # Tenta leitura robusta com o separador mais comum para Excel/CSV brasileiro (;)
             try:
-                uploaded_file.seek(0)
-                # Tenta leitura robusta com base no formato brasileiro comum (vírgula decimal)
                 df = pd.read_csv(uploaded_file, decimal=',', sep=';', thousands='.')
-            except Exception:
+            except:
                 uploaded_file.seek(0)
-                # Fallback para leitura padrão
+                # Fallback para leitura padrão (vírgula ou tab)
                 df = pd.read_csv(uploaded_file)
         else: # XLSX
             uploaded_file.seek(0)
+            # Lê o Excel
             df = pd.read_excel(uploaded_file)
         
         if product_name == 'Bionio':
@@ -78,11 +79,11 @@ def process_uploaded_file(uploaded_file, product_name):
         
     except Exception as e:
         log_event("FILE_PROCESSING_FAIL", f"Erro no processamento de {product_name}: {e}")
-        return False, f"Erro no processamento do arquivo: {e}", None
+        # Retorna o erro real para o usuário
+        return False, f"Erro no processamento do arquivo: {e}", None 
 
 def process_bionio_data(df):
     """Processamento específico para dados do Bionio."""
-    # Limpeza de strings e conversão para float
     df['Valor total do pedido'] = df['Valor total do pedido'].astype(str).str.replace(r'[\sR\$]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
     
     df['Valor total do pedido'] = pd.to_numeric(df['Valor total do pedido'], errors='coerce')
@@ -95,24 +96,38 @@ def process_bionio_data(df):
     return df_agg.rename(columns={'Valor total do pedido': 'Valor Total Pedidos'}).drop(columns=['Data da criação do pedido'])
 
 def process_rovemapay_data(df):
-    """Processamento específico para dados do Rovema Pay."""
+    """Processamento específico para dados do Rovema Pay (AGORA MAIS ROBUSTO)."""
     
-    def clean_value(series):
+    # Função auxiliar para limpar e converter valores de string, tratando NaNs
+    def clean_value(series_or_key, df_source=df):
+        # Usa .get() para defensividade contra colunas inexistentes (embora improvável aqui)
+        series = df_source.get(series_or_key) 
+        if series is None:
+            return pd.Series([np.nan] * len(df_source)) # Retorna nulo se a coluna não existir
+            
         if series.dtype == 'object':
-            return series.astype(str).str.replace(r'[\sR\$\%]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+            # Usa .fillna('') para evitar erros de string em células vazias
+            cleaned = series.fillna('').astype(str).str.replace(r'[\sR\$\%]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+            return cleaned
         return series
         
-    df['Liquido'] = pd.to_numeric(clean_value(df['Liquido']), errors='coerce')
-    df['Bruto'] = pd.to_numeric(clean_value(df['Bruto']), errors='coerce')
-    df['Taxa Cliente'] = pd.to_numeric(clean_value(df['Taxa Cliente']), errors='coerce')
-    df['Taxa Adquirente'] = pd.to_numeric(clean_value(df['Taxa Adquirente']), errors='coerce')
+    # Conversão de colunas de valor
+    df['Liquido'] = pd.to_numeric(clean_value('Liquido'), errors='coerce')
+    df['Bruto'] = pd.to_numeric(clean_value('Bruto'), errors='coerce')
+    df['Taxa Cliente'] = pd.to_numeric(clean_value('Taxa Cliente'), errors='coerce')
+    df['Taxa Adquirente'] = pd.to_numeric(clean_value('Taxa Adquirente'), errors='coerce')
     
-    df['Venda'] = pd.to_datetime(df['Venda'], errors='coerce')
+    # Conversão de Data, tratando NaNs com errors='coerce'
+    df['Venda'] = pd.to_datetime(df.get('Venda'), errors='coerce')
     
+    # Limpeza: Remove linhas com valores nulos nas colunas críticas
     df = df.dropna(subset=['Bruto', 'Liquido', 'Venda'])
     
+    # Cálculo da Receita (MDR + Spread)
     df['Receita'] = df['Bruto'] - df['Liquido']
-    df['Custo_Total_Perc'] = (df['Receita'] / df['Bruto']) * 100
+    
+    # Cálculo do Custo_Total_Perc (Defensivo contra divisão por zero)
+    df['Custo_Total_Perc'] = np.where(df['Bruto'] != 0, (df['Receita'] / df['Bruto']) * 100, 0)
     
     # Agrupamento para o dashboard
     df_agg = df.groupby([df['Venda'].dt.to_period('M'), 'Status']).agg(
@@ -125,6 +140,7 @@ def process_rovemapay_data(df):
     return df_agg.drop(columns=['Venda'])
 
 # --- FUNÇÃO: BUSCAR DADOS DO FIRESTORE ---
+# ... (Mantenha a função get_latest_uploaded_data IGUAL) ...
 
 @st.cache_data(ttl=600) # Cache de 10 minutos para dados do Firestore
 def get_latest_uploaded_data(product_name):
@@ -137,7 +153,6 @@ def get_latest_uploaded_data(product_name):
     collection_name = f"data_{product_name.lower()}"
     
     try:
-        # Busca até 1000 documentos para evitar timeout (idealmente, use filtros)
         docs = st.session_state['db'].collection(collection_name).limit(1000).stream()
         data_list = []
         for doc in docs:
@@ -149,7 +164,6 @@ def get_latest_uploaded_data(product_name):
 
         df = pd.DataFrame(data_list)
         
-        # Garante a conversão correta de tipos para o Dashboard
         if product_name == 'Bionio' and 'Valor Total Pedidos' in df.columns:
             df['Valor Total Pedidos'] = pd.to_numeric(df['Valor Total Pedidos'], errors='coerce')
             
