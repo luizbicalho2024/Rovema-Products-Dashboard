@@ -74,19 +74,19 @@ def load_css():
     </style>
     """, unsafe_allow_html=True)
 
-# --- Função de Verificação de Usuários (Cacheada) ---
+# --- Função de Verificação de Usuários (Cacheada e Corrigida) ---
 @st.cache_data(ttl=3600) # Cacheia o resultado por 1 hora
-def check_if_users_exist(db_conn):
+def check_if_users_exist(): # REMOVIDO o argumento db_conn
     """Verifica (com cache) se algum usuário existe na coleção 'users'."""
+    # Pega o DB de dentro da função
+    db_conn = st.session_state.get('db')
     if db_conn:
         try:
             # Faz a leitura mínima necessária
             docs = db_conn.collection('users').limit(1).get()
             return len(docs) > 0 # Retorna True se > 0 usuários existirem
         except Exception as e:
-            # Se a leitura falhar (ex: permissão, quota inicial), loga e assume que *não* deve mostrar o alerta
             print(f"ERRO Firestore (Check Users): {e}")
-            # Não mostra st.error aqui para não poluir a UI de login
             return True # Assume que usuários existem ou erro impede a verificação
     return True # Assume que usuários existem se DB não estiver conectado
 
@@ -104,8 +104,11 @@ if not st.session_state['authenticated']:
 
     load_css()
 
+    # --- Layout do Container de Login ---
+    # Abre o container ANTES de qualquer elemento de UI
     st.markdown('<div class="login-container">', unsafe_allow_html=True)
 
+    # Coloca a logo AQUI, dentro do container
     try:
         st.image("assets/logoRB.png", width=250)
     except FileNotFoundError:
@@ -113,6 +116,7 @@ if not st.session_state['authenticated']:
     except Exception as e:
         st.error(f"Erro ao carregar a logo: {e}")
 
+    # Continua com o resto do formulário DENTRO do container
     st.title("Rovema Bank Pulse 📈")
     st.subheader("Sistema de Gestão de Performance")
     st.markdown("---")
@@ -127,8 +131,7 @@ if not st.session_state['authenticated']:
             success, message = login_user(email, password)
             if success:
                 st.success(f"Bem-vindo, {st.session_state['user_email']} ({st.session_state['user_role']})!")
-                # Limpa o cache da verificação de usuário após login bem-sucedido
-                check_if_users_exist.clear()
+                check_if_users_exist.clear() # Limpa cache após login
                 st.rerun()
             else:
                 st.error(message)
@@ -143,18 +146,20 @@ if not st.session_state['authenticated']:
             """
         )
 
-    # Aviso de Setup (Usa a função cacheada)
+    # Aviso de Setup (Usa a função cacheada sem argumento)
     if initialization_success:
-        db = st.session_state.get('db')
-        # Chama a função cacheada - só vai ao DB na primeira vez ou a cada hora
-        users_exist = check_if_users_exist(db)
+        # Chama a função cacheada sem passar o db
+        users_exist = check_if_users_exist()
 
         # Mostra o alerta apenas se a conexão funcionou E a função cacheada retornou False
-        if db and not users_exist:
+        # (Precisa pegar o 'db' do state aqui só para a condição 'if db')
+        db_conn_check = st.session_state.get('db')
+        if db_conn_check and not users_exist:
              st.warning("⚠️ **Alerta de Setup:** Crie seu primeiro usuário 'Admin' manualmente no Console do Firebase.")
     else:
         st.error("Falha na conexão com o Firebase. Verifique os logs e o arquivo secrets.toml.")
 
+    # Fecha o container DEPOIS de todos os elementos da página de login
     st.markdown('</div>', unsafe_allow_html=True)
 
 # --- Dashboard Principal (Após Login) ---
@@ -165,6 +170,5 @@ else:
     st.sidebar.markdown("---")
 
     if st.sidebar.button("Logout", help="Sair do sistema com segurança"):
-        # Limpa o cache da verificação de usuário ao deslogar
-        check_if_users_exist.clear()
+        check_if_users_exist.clear() # Limpa cache ao deslogar
         logout_user()
