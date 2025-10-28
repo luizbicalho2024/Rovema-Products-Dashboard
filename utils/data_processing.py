@@ -19,14 +19,12 @@ def fetch_asto_data(start_date: date, end_date: date):
     """Simula a coleta de dados de Fatura Pagamento Fechada do Asto (API)."""
     log_event("API_CALL_ASTO", f"Simulação de chamada Asto para {start_date} a {end_date}")
     
-    # Datas de apuração no formato datetime
     data = [
         {"dataFimApuracao": "2025-10-07T00:00:00", "valorBruto": 2159.81, "valorLiquido": 2084.21},
         {"dataFimApuracao": "2025-10-14T00:00:00", "valorBruto": 15986.99, "valorLiquido": 15427.44},
         {"dataFimApuracao": "2025-10-14T00:00:00", "valorBruto": 683.80, "valorLiquido": 659.86},
         {"dataFimApuracao": "2025-10-21T00:00:00", "valorBruto": 9970.72, "valorLiquido": 9621.74},
         {"dataFimApuracao": "2025-10-28T00:00:00", "valorBruto": 3582.86, "valorLiquido": 3457.45},
-        # Adicionando dados fora do range padrão para teste de filtro
         {"dataFimApuracao": "2025-07-15T00:00:00", "valorBruto": 5000.00, "valorLiquido": 4800.00},
     ]
     df = pd.DataFrame(data)
@@ -65,13 +63,10 @@ def fetch_eliq_data(start_date: date, end_date: date):
     return df.groupby('data_cadastro')[['valor_total', 'consumo_medio']].agg({'valor_total': 'sum', 'consumo_medio': 'mean'}).reset_index()
 
 
-# --- Funções de Processamento e Agregação (Com Filtro de Data) ---
-
-# [Mantenha process_uploaded_file e as funções de processamento RAW (process_bionio_data, process_rovemapay_data) IGUAIS]
+# [Mantenha process_uploaded_file e as funções de processamento RAW IGUAIS]
 
 def process_uploaded_file(uploaded_file, product_name):
     """Processa o arquivo, faz a limpeza, padroniza nomes de coluna e retorna o DataFrame RAW."""
-    # ... (Mantenha o corpo da função que lê e limpa o arquivo IGUAL) ...
     try:
         is_csv = uploaded_file.name.lower().endswith('.csv')
         uploaded_file.seek(0)
@@ -162,6 +157,9 @@ def process_rovemapay_data(df):
     return df
 
 
+# --- FUNÇÃO: BUSCAR DADOS DO FIRESTORE E AGREGAR (CORRIGIDA) ---
+
+# NOTE: A função precisa aceitar start_date e end_date para que o cache funcione corretamente
 @st.cache_data(ttl=600, show_spinner=False)
 def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
     """
@@ -171,7 +169,7 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
     collection_name = f"data_{product_name.lower()}"
     
     try:
-        # 1. BUSCA RAW DATA DO FIRESTORE (Busca sem filtro de data para otimizar a query)
+        # 1. BUSCA RAW DATA DO FIRESTORE (Busca sem filtro de data no Firebase)
         docs = st.session_state['db'].collection(collection_name).limit(1000).stream()
         data_list = [doc.to_dict() for doc in docs]
 
@@ -179,7 +177,7 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
 
         df = pd.DataFrame(data_list)
         
-        # 2. FILTRAGEM E AGREGAÇÃO
+        # 2. FILTRAGEM E AGREGAÇÃO (Aplica o filtro de data no Pandas)
         
         if product_name == 'Bionio':
             DATA_COL = 'data_da_criação_do_pedido'
@@ -228,5 +226,4 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
         return pd.DataFrame()
 
     except Exception as e:
-        log_event("FIRESTORE_FETCH_FAIL", f"Falha ao buscar dados de {product_name} no Firestore: {e}")
-        return pd.DataFrame()
+        log_event("FIRESTORE_FETCH_FAIL", f"Falha ao buscar dados de {product_name} no Firestore:
