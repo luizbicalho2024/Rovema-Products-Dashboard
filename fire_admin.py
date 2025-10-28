@@ -8,30 +8,38 @@ from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp
 
 # --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE (ROBUSTA) ---
 
+# NO ARQUIVO fire_admin.py (Substitua SÓ a função get_credentials_dict):
+
 def get_credentials_dict():
     """Lê todas as credenciais do st.secrets, faz uma cópia segura e garante a limpeza."""
     
-    # 1. Carrega o Service Account (READ-ONLY)
     sa_config_readonly = st.secrets.get("firebase_service_account")
     
     if not sa_config_readonly:
         return None, None
         
-    # CRITICAL FIX: Cria uma cópia MÚTAVEL para evitar TypeError de atribuição (somente leitura)
+    # Cria um dicionário Python puro (mutável) a partir do objeto secrets
     sa_config = dict(sa_config_readonly)
         
-    # 2. Limpeza Final da Private Key (Resolvendo "Invalid Private Key")
-    # Acessa a chave no objeto MÚTAVEL
+    # 1. Limpeza da Private Key (CRÍTICA)
     if 'private_key' in sa_config:
         key_content = sa_config['private_key']
         # Remove espaços indesejados e trata as quebras de linha ('\n')
         if isinstance(key_content, str):
             key_content = key_content.strip().replace('\\n', '\n')
-        # Atribuição segura ao dicionário mutável
         sa_config['private_key'] = key_content
 
-    # 3. Carrega e limpa a Chave da API Web (Resolvendo "API Web não encontrada")
-    api_key = st.secrets.get("FIREBASE_WEB_API_KEY", "")
+    # 2. Carrega a Chave da API Web de forma MÚLTIPLA
+    
+    # Tenta ler do novo bloco [api_keys]
+    api_key_block = st.secrets.get("api_keys", {})
+    api_key = api_key_block.get("FIREBASE_WEB_API_KEY")
+    
+    # Se falhar, tenta ler do nível superior (o método anterior)
+    if not api_key:
+        api_key = st.secrets.get("FIREBASE_WEB_API_KEY")
+
+    # Limpa a chave
     api_key = api_key.strip() if isinstance(api_key, str) else None
 
     return sa_config, api_key
