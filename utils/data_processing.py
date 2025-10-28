@@ -83,6 +83,7 @@ def process_uploaded_file(uploaded_file, product_name):
             uploaded_file.seek(0)
             df = pd.read_excel(uploaded_file, header=0) 
         
+        # Padroniza nomes de colunas (ex: "Cliente" -> "cliente", "CNPJ" -> "cnpj")
         df.columns = [col.strip().lower().replace(' ', '_').replace('.', '').replace('%', '') if isinstance(col, str) else str(col).lower() for col in df.columns]
         
         df = df.dropna(how='all', axis=0)
@@ -102,46 +103,42 @@ def process_uploaded_file(uploaded_file, product_name):
         return False, f"Erro no processamento do arquivo: {e}", None 
 
 def process_bionio_data(df):
-    """Limpa e formata os dados do Bionio. Sem agregação."""
-    
+    """
+    [CORRIGIDO] Limpa e formata os dados do Bionio.
+    Apenas valida as colunas necessárias para o dashboard, mas MANTÉM TODAS as outras colunas (como cnpj_da_organização).
+    """
     VALOR_COL = 'valor_total_do_pedido'
     DATA_COL = 'data_da_criação_do_pedido'
-    CLIENTE_COL = 'cnpj' # Assumindo que Bionio tem uma coluna 'cnpj' ou 'cliente'
-    
-    REQUIRED_COLS = [VALOR_COL, DATA_COL] # CLIENTE_COL é opcional mas necessário para gestão
+    REQUIRED_COLS = [VALOR_COL, DATA_COL]
     
     if not all(col in df.columns for col in REQUIRED_COLS):
         missing = [col for col in REQUIRED_COLS if col not in df.columns]
         raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Colunas disponíveis: {df.columns.tolist()}")
 
-    # Verifica se a coluna de cliente existe, se não, não pode ser usada na gestão
-    if CLIENTE_COL not in df.columns and 'cliente' not in df.columns:
-        raise ValueError(f"Coluna de cliente ('{CLIENTE_COL}' ou 'cliente') não encontrada. Não é possível processar para gestão de carteira.")
-
+    # Limpa apenas as colunas financeiras/de data
     df[VALOR_COL] = df[VALOR_COL].astype(str).str.replace(r'[\sR\$]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
     df[VALOR_COL] = pd.to_numeric(df[VALOR_COL], errors='coerce')
     df[DATA_COL] = pd.to_datetime(df[DATA_COL], format='%d/%m/%Y', errors='coerce').dt.normalize()
     
     df = df.dropna(subset=[VALOR_COL, DATA_COL])
+    
+    # Retorna o DataFrame completo (com colunas de cliente intactas)
     return df
 
 def process_rovemapay_data(df):
-    """Limpa e formata os dados do Rovema Pay. Sem agregação."""
+    """
+    [CORRIGIDO] Limpa e formata os dados do Rovema Pay.
+    Valida colunas financeiras, mas MANTÉM TODAS as outras (como cnpj/cliente).
+    """
     LIQUIDO_COL = 'liquido'
     BRUTO_COL = 'bruto'
     VENDA_COL = 'venda'
     STATUS_COL = 'status'
-    CLIENTE_COL = 'cnpj' # Assumindo que RovemaPay tem 'cnpj' ou 'cliente'
-    
-    REQUIRED_COLS = [LIQUIDO_COL, BRUTO_COL, VENDA_COL, STATUS_COL] # CLIENTE_COL é opcional mas necessário
+    REQUIRED_COLS = [LIQUIDO_COL, BRUTO_COL, VENDA_COL, STATUS_COL]
 
     if not all(col in df.columns for col in REQUIRED_COLS):
         missing = [col for col in REQUIRED_COLS if col not in df.columns]
         raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Colunas disponíveis: {df.columns.tolist()}")
-
-    # Verifica se a coluna de cliente existe
-    if CLIENTE_COL not in df.columns and 'cliente' not in df.columns:
-        raise ValueError(f"Coluna de cliente ('{CLIENTE_COL}' ou 'cliente') não encontrada. Não é possível processar para gestão de carteira.")
 
     def clean_value(series_key):
         series = df.get(series_key)
@@ -150,18 +147,23 @@ def process_rovemapay_data(df):
             cleaned = series.fillna('').astype(str).str.replace(r'[\sR\$\%]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
             return cleaned
         return series
-        
+    
+    # Limpa apenas as colunas necessárias
     df[LIQUIDO_COL] = pd.to_numeric(clean_value(LIQUIDO_COL), errors='coerce')
     df[BRUTO_COL] = pd.to_numeric(clean_value(BRUTO_COL), errors='coerce')
-    df['taxa_cliente'] = pd.to_numeric(clean_value('taxa_cliente'), errors='coerce')
-    df['taxa_adquirente'] = pd.to_numeric(clean_value('taxa_adquirente'), errors='coerce')
     df[VENDA_COL] = pd.to_datetime(df.get(VENDA_COL), errors='coerce').dt.normalize()
+    
+    if 'taxa_cliente' in df.columns:
+        df['taxa_cliente'] = pd.to_numeric(clean_value('taxa_cliente'), errors='coerce')
+    if 'taxa_adquirente' in df.columns:
+        df['taxa_adquirente'] = pd.to_numeric(clean_value('taxa_adquirente'), errors='coerce')
     
     df = df.dropna(subset=[BRUTO_COL, LIQUIDO_COL, VENDA_COL, STATUS_COL])
     
     df['receita'] = df[BRUTO_COL] - df[LIQUIDO_COL]
     df['custo_total_perc'] = np.where(df[BRUTO_COL] != 0, (df[LIQUIDO_COL] / df[BRUTO_COL]) * 100, 0)
     
+    # Retorna o DataFrame completo (com colunas de cliente intactas)
     return df
 
 
@@ -287,7 +289,6 @@ def get_latest_aggregated_data(product_name: str, start_date: date, end_date: da
         log_event("DATA_AGGREGATION_FAIL", f"Falha ao agregar dados de {product_name}: {e}")
         return pd.DataFrame()
 
-# --- [FUNÇÃO CORRIGIDA] ---
 
 @st.cache_data(ttl=600, show_spinner="Buscando lista de clientes...")
 def get_all_clients_with_products():
@@ -301,55 +302,52 @@ def get_all_clients_with_products():
     
     all_clients_dfs = []
 
+    # --- INÍCIO DA CORREÇÃO ---
+    # Mapeamento de Produto -> Lista de colunas de cliente (em ordem de prioridade)
+    # Baseado nas suas imagens de evidência.
     product_client_column_map = {
-        'Rovema Pay': 'cnpj', 
-        'Bionio': 'cnpj',     
-        'Asto': 'cnpj',       
-        'Eliq': 'cnpj_posto'
+        'Rovema Pay': ['cnpj', 'ec'], 
+        'Bionio': ['cnpj_da_organização', 'razão_social'],
+        'Asto': ['cnpj', 'cliente'],
+        'Eliq': ['cnpj_posto']
     }
+    # --- FIM DA CORREÇÃO ---
 
-    for product, client_col in product_client_column_map.items():
+    for product, client_columns in product_client_column_map.items():
         
-        # --- INÍCIO DA CORREÇÃO ---
-        # Garante que os dados da API (Asto, Eliq) sejam carregados
-        # no cache do Firestore antes de tentar lê-los.
         if product in ['Asto', 'Eliq']:
             try:
-                # Dispara a função que busca da API e salva no Firestore
                 fetch_api_and_save(product, start_date, end_date)
             except Exception as e:
                 log_event("CLIENT_FETCH_API_FAIL", f"Falha ao salvar API {product} para Gestão: {e}")
-                continue # Pula para o próximo produto se a API falhar
-        # --- FIM DA CORREÇÃO ---
-
-        # Agora, lê os dados (sejam de upload ou da API recém-salva)
+                continue
+        
+        # Lê os dados (sejam de upload ou da API recém-salva)
         df_raw = get_raw_data_from_firestore(product, start_date, end_date)
         
         if not df_raw.empty:
             
             df_product_clients = pd.DataFrame()
             
-            # Tenta a coluna principal
-            if client_col in df_raw.columns:
-                df_product_clients = df_raw[[client_col]].copy()
-                df_product_clients = df_product_clients.rename(columns={client_col: 'client_id'})
+            # Tenta encontrar a primeira coluna de cliente válida na ordem de prioridade
+            found_col = None
+            for col in client_columns:
+                if col in df_raw.columns:
+                    found_col = col
+                    break # Encontrou a coluna prioritária
             
-            # Fallback para 'cnpj' ou 'cliente' genérico
-            elif 'cnpj' in df_raw.columns:
-                df_product_clients = df_raw[['cnpj']].copy()
-                df_product_clients = df_product_clients.rename(columns={'cnpj': 'client_id'})
-            elif 'cliente' in df_raw.columns:
-                df_product_clients = df_raw[['cliente']].copy()
-                df_product_clients = df_product_clients.rename(columns={'cliente': 'client_id'})
+            if found_col:
+                df_product_clients = df_raw[[found_col]].copy()
+                df_product_clients = df_product_clients.rename(columns={found_col: 'client_id'})
+                df_product_clients['product'] = product
+                df_product_clients = df_product_clients.dropna(subset=['client_id'])
+                all_clients_dfs.append(df_product_clients)
             else:
-                log_event("CLIENT_FETCH_WARN", f"Produto {product} não possui coluna de cliente identificável.")
-                continue
-
-            df_product_clients['product'] = product
-            df_product_clients = df_product_clients.dropna(subset=['client_id'])
-            all_clients_dfs.append(df_product_clients)
+                log_event("CLIENT_FETCH_WARN", f"Produto {product} não possui nenhuma coluna de cliente identificável (ex: {', '.join(client_columns)}).")
+                continue # Pula este produto
 
     if not all_clients_dfs:
+        log_event("CLIENT_FETCH_ERROR", "Nenhum cliente encontrado em nenhum produto.")
         return pd.DataFrame(columns=['client_id', 'product'])
 
     final_df = pd.concat(all_clients_dfs).drop_duplicates()
