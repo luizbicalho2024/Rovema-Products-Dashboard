@@ -260,3 +260,92 @@ def save_processed_data_to_firestore(product_name: str, df_data: pd.DataFrame):
     except Exception as e:
         log_event("DATA_SAVE_FAIL", f"Falha ao salvar dados de {product_name}: {e}")
         return False, f"Erro ao salvar dados no Firestore: {e}"
+
+# NO ARQUIVO fire_admin.py:
+
+# ... (Mantenha as seções 1, 2, 3 e 4 IGUAIS) ...
+
+# --- 5. FUNÇÃO: SALVAR DADOS PROCESSADOS NO FIRESTORE ---
+
+def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type: str):
+    """
+    Salva o DataFrame processado (de API ou Upload) no Firestore.
+    """
+    if st.session_state.get('db') is None:
+        return False, "Firestore não inicializado."
+
+    data_records = df_data.to_dict('records')
+    upload_metadata = {
+        'product': product_name,
+        'source_type': source_type, # Novo campo: 'API' ou 'UPLOAD'
+        'uploaded_by': st.session_state.get('user_email', 'SISTEMA'),
+        'timestamp': server_timestamp,
+        'total_records': len(data_records),
+    }
+    
+    try:
+        # Cria um documento para rastrear este salvamento/cache
+        upload_doc_ref = st.session_state['db'].collection('data_metadata').add(upload_metadata)
+        upload_id = upload_doc_ref[1].id if isinstance(upload_doc_ref, tuple) else upload_doc_ref.id
+
+        collection_name = f"data_{product_name.lower()}"
+        
+        batch = st.session_state['db'].batch()
+        
+        for i, record in enumerate(data_records):
+            record['data_source_id'] = upload_id 
+            record['ingestion_timestamp'] = server_timestamp
+            
+            # Garante que o campo de data seja uma string para o Firestore
+            for key, value in record.items():
+                if isinstance(value, pd.Timestamp):
+                    record[key] = value.isoformat()
+            
+            doc_ref = st.session_state['db'].collection(collection_name).document()
+            batch.set(doc_ref, record)
+            
+            # Limite do batch do Firestore é 500
+            if (i + 1) % 499 == 0:
+                batch.commit()
+                batch = st.session_state['db'].batch() 
+                
+        # Commita os documentos restantes
+        batch.commit()
+        
+        log_event("DATA_SAVE_SUCCESS", f"Dados de {product_name} ({source_type}) salvos em {collection_name}. Total: {len(data_records)} registros.")
+        return True, f"Dados de {product_name} ({source_type}) salvos com sucesso."
+    
+    except Exception as e:
+        log_event("DATA_SAVE_FAIL", f"Falha ao salvar dados de {product_name} ({source_type}): {e}")
+        return False, f"Erro ao salvar dados de {product_name} no Firestore: {e}"
+
+# Mantenha esta função antiga para compatibilidade com o Upload Page
+save_processed_data_to_firestore = lambda product_name, df_data: save_data_to_firestore(product_name, df_data, 'UPLOAD')
+
+# --- Nova Função de Carregamento da API que Salva ---
+@st.cache_data(ttl=3600, show_spinner="Buscando dados da API e armazenando...")
+def fetch_api_and_save(product_name: str, start_date: date, end_date: date):
+    """
+    Busca os dados via API Mock, salva no Firestore e retorna o DataFrame RAW.
+    Usaremos um TTL alto (1h) para evitar chamadas repetidas à "API Mock".
+    """
+    
+    # 1. Busca os dados via Mock (função no utils/data_processing.py)
+    if product_name == 'Asto':
+        df_raw = fetch_asto_data(start_date, end_date)
+    elif product_name == 'Eliq':
+        df_raw = fetch_eliq_data(start_date, end_date)
+    else:
+        return pd.DataFrame()
+        
+    if df_raw.empty:
+        log_event("API_FETCH_EMPTY", f"API de {product_name} retornou dados vazios.")
+        return pd.DataFrame()
+        
+    # 2. Salva o resultado no Firestore
+    success, message = save_data_to_firestore(product_name, df_raw, 'API')
+    
+    if not success:
+        st.warning(f"Aviso: Falha ao armazenar dados de {product_name} no Firestore. Usando dados voláteis.")
+
+    return df_raw
