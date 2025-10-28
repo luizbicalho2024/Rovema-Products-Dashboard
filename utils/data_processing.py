@@ -342,7 +342,7 @@ def get_all_clients_with_products():
         
         # --- INÍCIO DA LEITURA DIRETA ---
         try:
-            docs = db_conn.collection(collection_name).limit(50000).stream() # Limite alto para pegar todos os clientes
+            docs = db_conn.collection(collection_name).limit(500).stream() # Limite alto para pegar todos os clientes
             
             found_clients_for_product = False
             for doc in docs:
