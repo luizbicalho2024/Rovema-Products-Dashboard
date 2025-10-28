@@ -87,6 +87,7 @@ def login_user(email: str, password: str):
     """Autentica o usuário e recupera o papel (role) no Firestore."""
     if not FIREBASE_WEB_API_KEY:
         log_event("LOGIN_ERROR", "Chave da API Web não configurada ou vazia nos secrets.")
+        # Se a chave da API Web falhou, o Service Account também pode ter falhado
         return False, "Erro de configuração: Chave da API Web não encontrada ou está vazia."
         
     API_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
@@ -204,7 +205,7 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
         upload_doc_ref = st.session_state['db'].collection('data_metadata').add(upload_metadata)
         upload_id = upload_doc_ref[1].id if isinstance(upload_doc_ref, tuple) else upload_doc_ref.id
 
-        collection_name = f"data_{product_name.lower()}"
+        collection_name = f"data_{product_name.lower().replace(' ', '_')}"
         
         batch = st.session_state['db'].batch()
         
@@ -212,15 +213,14 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
             record['data_source_id'] = upload_id 
             record['ingestion_timestamp'] = server_timestamp
             
-            # Garante que o campo de data seja uma string para o Firestore
             for key, value in record.items():
+                # Converte Timestamps para ISO string (Firestore não salva objetos Timestamp do Pandas)
                 if isinstance(value, pd.Timestamp):
                     record[key] = value.isoformat()
             
             doc_ref = st.session_state['db'].collection(collection_name).document()
             batch.set(doc_ref, record)
             
-            # Limite do batch do Firestore é 500
             if (i + 1) % 499 == 0:
                 batch.commit()
                 batch = st.session_state['db'].batch() 
@@ -234,7 +234,7 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
         log_event("DATA_SAVE_FAIL", f"Falha ao salvar dados de {product_name} ({source_type}): {e}")
         return False, f"Erro ao salvar dados de {product_name} no Firestore: {e}"
 
-# Cria aliases para manter a compatibilidade
+# Cria aliases
 save_processed_data_to_firestore = lambda product_name, df_data: save_data_to_firestore(product_name, df_data, 'UPLOAD')
 
 @st.cache_data(ttl=3600, show_spinner="Buscando dados da API e armazenando...")
