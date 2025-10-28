@@ -5,8 +5,10 @@ import json
 import requests
 import pandas as pd
 from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp 
-from datetime import date # Importa date para tipagem
+from datetime import date
 import os
+# Adicione a importação do utils/data_processing para resolver a referência circular.
+# Usamos a importação local dentro da função que precisa dela para evitar loop.
 
 # --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE (ROBUSTA) ---
 
@@ -18,21 +20,18 @@ def get_credentials_dict():
     if not sa_config_readonly:
         return None, None
         
-    # CRITICAL FIX: Cria uma cópia MÚTAVEL
     sa_config = dict(sa_config_readonly)
         
     if 'private_key' in sa_config:
         key_content = sa_config['private_key']
         if isinstance(key_content, str):
-            # Limpa espaços e trata as quebras de linha
             key_content = key_content.strip().replace('\\n', '\n')
         sa_config['private_key'] = key_content
 
-    # Carrega a chave da API Web
+    # FIX: Prioriza a leitura robusta da API Key
     api_key = st.secrets.get("FIREBASE_WEB_API_KEY", "")
     api_key = api_key.strip() if isinstance(api_key, str) else None
 
-    # Fallback para variáveis de ambiente (o que o Streamlit faz)
     if not api_key:
         api_key = os.environ.get("FIREBASE_WEB_API_KEY", "")
         api_key = api_key.strip() if isinstance(api_key, str) else None
