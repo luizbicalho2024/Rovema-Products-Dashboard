@@ -4,11 +4,17 @@ import requests
 import streamlit as st
 from datetime import datetime
 import altair as alt
-from fire_admin import log_event, db, server_timestamp
-import json 
+
+# Importa módulos Firebase
+try:
+    from fire_admin import log_event, db, server_timestamp
+    from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp
+except ImportError:
+    # Mocks para ambiente de teste sem Firebase (Se necessário)
+    def log_event(action: str, details: str = ""): pass
+
 
 # --- MOCKS de APIs (Asto e Eliq) ---
-# ... (Mantenha as funções fetch_asto_data e fetch_eliq_data IGUAIS) ...
 
 def fetch_asto_data(start_date: str, end_date: str):
     """
@@ -45,6 +51,7 @@ def fetch_eliq_data(start_date: str, end_date: str):
     df['data_cadastro'] = pd.to_datetime(df['data_cadastro']).dt.normalize()
     return df.groupby('data_cadastro')[['valor_total', 'consumo_medio']].agg({'valor_total': 'sum', 'consumo_medio': 'mean'}).reset_index()
 
+
 # --- Funções de Processamento de Arquivos ---
 
 def process_uploaded_file(uploaded_file, product_name):
@@ -54,19 +61,22 @@ def process_uploaded_file(uploaded_file, product_name):
     try:
         is_csv = uploaded_file.name.lower().endswith('.csv')
         
+        # Tenta ler o arquivo de forma flexível
         if is_csv:
             uploaded_file.seek(0)
-            # Tenta leitura robusta com o separador mais comum para Excel/CSV brasileiro (;)
             try:
+                # Tenta leitura robusta com o separador ';'
                 df = pd.read_csv(uploaded_file, decimal=',', sep=';', thousands='.')
-            except:
+            except Exception:
                 uploaded_file.seek(0)
-                # Fallback para leitura padrão (vírgula ou tab)
+                # Fallback para leitura padrão
                 df = pd.read_csv(uploaded_file)
         else: # XLSX
             uploaded_file.seek(0)
-            # Lê o Excel
             df = pd.read_excel(uploaded_file)
+        
+        # Garante que as colunas sejam strings para evitar erro de indexação e faz a limpeza inicial
+        df.columns = [col.strip() if isinstance(col, str) else str(col) for col in df.columns]
         
         if product_name == 'Bionio':
             df_processed = process_bionio_data(df.copy())
@@ -84,26 +94,38 @@ def process_uploaded_file(uploaded_file, product_name):
 
 def process_bionio_data(df):
     """Processamento específico para dados do Bionio."""
+    REQUIRED_COLS = ['Valor total do pedido', 'Data da criação do pedido']
+    
+    # Validação de colunas
+    if not all(col in df.columns for col in REQUIRED_COLS):
+        missing = [col for col in REQUIRED_COLS if col not in df.columns]
+        raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Verifique o cabeçalho do arquivo.")
+        
     df['Valor total do pedido'] = df['Valor total do pedido'].astype(str).str.replace(r'[\sR\$]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
     
     df['Valor total do pedido'] = pd.to_numeric(df['Valor total do pedido'], errors='coerce')
     df['Data da criação do pedido'] = pd.to_datetime(df['Data da criação do pedido'], format='%d/%m/%Y', errors='coerce')
     
-    df = df.dropna(subset=['Valor total do pedido', 'Data da criação do pedido'])
+    df = df.dropna(subset=REQUIRED_COLS)
     
     df_agg = df.groupby(df['Data da criação do pedido'].dt.to_period('M'))['Valor total do pedido'].sum().reset_index()
     df_agg['Mês'] = df_agg['Data da criação do pedido'].astype(str)
     return df_agg.rename(columns={'Valor total do pedido': 'Valor Total Pedidos'}).drop(columns=['Data da criação do pedido'])
 
 def process_rovemapay_data(df):
-    """Processamento específico para dados do Rovema Pay (AGORA MAIS ROBUSTO)."""
+    """Processamento específico para dados do Rovema Pay (MAIS ROBUSTO)."""
+    REQUIRED_COLS = ['Liquido', 'Bruto', 'Venda', 'Status']
     
-    # Função auxiliar para limpar e converter valores de string, tratando NaNs
-    def clean_value(series_or_key, df_source=df):
-        # Usa .get() para defensividade contra colunas inexistentes (embora improvável aqui)
-        series = df_source.get(series_or_key) 
+    # Validação de colunas
+    if not all(col in df.columns for col in REQUIRED_COLS):
+        missing = [col for col in REQUIRED_COLS if col not in df.columns]
+        raise ValueError(f"Colunas obrigatórias ausentes: {missing}. Verifique o cabeçalho do arquivo.")
+        
+    # Função auxiliar para limpar e converter valores de string (mais defensiva)
+    def clean_value(series_key):
+        series = df.get(series_key)
         if series is None:
-            return pd.Series([np.nan] * len(df_source)) # Retorna nulo se a coluna não existir
+            return pd.Series([np.nan] * len(df))
             
         if series.dtype == 'object':
             # Usa .fillna('') para evitar erros de string em células vazias
@@ -114,14 +136,16 @@ def process_rovemapay_data(df):
     # Conversão de colunas de valor
     df['Liquido'] = pd.to_numeric(clean_value('Liquido'), errors='coerce')
     df['Bruto'] = pd.to_numeric(clean_value('Bruto'), errors='coerce')
+    
+    # As colunas de taxa podem estar ausentes sem quebrar o processamento principal, mas são usadas no cálculo
     df['Taxa Cliente'] = pd.to_numeric(clean_value('Taxa Cliente'), errors='coerce')
     df['Taxa Adquirente'] = pd.to_numeric(clean_value('Taxa Adquirente'), errors='coerce')
     
-    # Conversão de Data, tratando NaNs com errors='coerce'
+    # Conversão de Data
     df['Venda'] = pd.to_datetime(df.get('Venda'), errors='coerce')
     
     # Limpeza: Remove linhas com valores nulos nas colunas críticas
-    df = df.dropna(subset=['Bruto', 'Liquido', 'Venda'])
+    df = df.dropna(subset=REQUIRED_COLS)
     
     # Cálculo da Receita (MDR + Spread)
     df['Receita'] = df['Bruto'] - df['Liquido']
@@ -140,7 +164,6 @@ def process_rovemapay_data(df):
     return df_agg.drop(columns=['Venda'])
 
 # --- FUNÇÃO: BUSCAR DADOS DO FIRESTORE ---
-# ... (Mantenha a função get_latest_uploaded_data IGUAL) ...
 
 @st.cache_data(ttl=600) # Cache de 10 minutos para dados do Firestore
 def get_latest_uploaded_data(product_name):
@@ -164,6 +187,7 @@ def get_latest_uploaded_data(product_name):
 
         df = pd.DataFrame(data_list)
         
+        # Garante a conversão correta de tipos para o Dashboard
         if product_name == 'Bionio' and 'Valor Total Pedidos' in df.columns:
             df['Valor Total Pedidos'] = pd.to_numeric(df['Valor Total Pedidos'], errors='coerce')
             
