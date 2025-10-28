@@ -76,7 +76,7 @@ def load_css():
 
 # --- Função de Verificação de Usuários (Cacheada e Corrigida) ---
 @st.cache_data(ttl=3600) # Cacheia o resultado por 1 hora
-def check_if_users_exist(): # REMOVIDO o argumento db_conn
+def check_if_users_exist(): # SEM argumento db_conn
     """Verifica (com cache) se algum usuário existe na coleção 'users'."""
     # Pega o DB de dentro da função
     db_conn = st.session_state.get('db')
@@ -87,8 +87,10 @@ def check_if_users_exist(): # REMOVIDO o argumento db_conn
             return len(docs) > 0 # Retorna True se > 0 usuários existirem
         except Exception as e:
             print(f"ERRO Firestore (Check Users): {e}")
-            return True # Assume que usuários existem ou erro impede a verificação
-    return True # Assume que usuários existem se DB não estiver conectado
+            # Retorna True para evitar mostrar o alerta se houver erro
+            return True
+    # Retorna True se DB não estiver conectado, para evitar mostrar o alerta
+    return True
 
 # 1. Inicializa o Firebase
 initialization_success = initialize_firebase()
@@ -148,22 +150,27 @@ if not st.session_state['authenticated']:
 
     # Aviso de Setup (Usa a função cacheada sem argumento)
     if initialization_success:
-        # Chama a função cacheada sem passar o db
+        # --- CORREÇÃO DO ERRO UnhashableParamError ---
+        # Chama a função cacheada SEM passar o db
         users_exist = check_if_users_exist()
+        # --- FIM DA CORREÇÃO ---
 
         # Mostra o alerta apenas se a conexão funcionou E a função cacheada retornou False
-        # (Precisa pegar o 'db' do state aqui só para a condição 'if db')
+        # (Ainda pega o 'db' do state aqui só para a condição 'if db_conn_check')
         db_conn_check = st.session_state.get('db')
         if db_conn_check and not users_exist:
              st.warning("⚠️ **Alerta de Setup:** Crie seu primeiro usuário 'Admin' manualmente no Console do Firebase.")
     else:
         st.error("Falha na conexão com o Firebase. Verifique os logs e o arquivo secrets.toml.")
 
+    # --- CORREÇÃO DA POSIÇÃO DA LOGO ---
     # Fecha o container DEPOIS de todos os elementos da página de login
     st.markdown('</div>', unsafe_allow_html=True)
+    # --- FIM DA CORREÇÃO ---
 
 # --- Dashboard Principal (Após Login) ---
 else:
+    # Mostra a barra lateral normalmente quando logado
     st.sidebar.title("Rovema Bank Pulse")
     st.sidebar.markdown(f"**Usuário:** `{st.session_state['user_email']}`")
     st.sidebar.markdown(f"**Nível:** **`{st.session_state['user_role']}`**")
