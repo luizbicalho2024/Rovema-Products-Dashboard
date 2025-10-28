@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-from fire_admin import save_processed_data_to_firestore, log_event
+# IMPORT CORRIGIDO: Agora importa a função de salvamento do Firestore
+from fire_admin import save_processed_data_to_firestore, log_event 
 from utils.data_processing import process_uploaded_file
 
 def upload_data_page():
@@ -31,12 +32,12 @@ def upload_data_page():
                 with st.spinner(f"Validando e processando arquivo de {product}..."):
                     success_proc, message_proc, df_preview = process_uploaded_file(uploaded_file, product)
                 
-                # FIX: Verifica a falha imediatamente ANTES de tentar copiar/usar o DataFrame
+                # FLUXO DE CONTROLE CORRIGIDO: Verifica a falha imediatamente
                 if not success_proc or df_preview is None:
                     st.error(f"Falha no processamento: {message_proc}")
                     return
 
-                # Se chegou aqui, o processamento foi um sucesso e df_preview é um DataFrame
+                # Se chegou aqui, o processamento foi um sucesso e df_preview é um DataFrame válido
                 df_to_save = df_preview.copy() 
                 
                 if df_to_save.empty:
