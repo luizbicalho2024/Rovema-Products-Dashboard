@@ -43,35 +43,39 @@ def dashboard_page():
     # ASTO: Evolução do Valor Transacionado vs Receita (Gráfico principal)
     st.subheader("ASTO: Evolução Valor Transacionado vs Receita")
     
-    asto_long = asto_df.melt('dataFimApuracao', var_name='Métrica', value_name='Valor')
+    if not asto_df.empty:
+        asto_long = asto_df.melt('dataFimApuracao', var_name='Métrica', value_name='Valor')
+        
+        asto_chart = alt.Chart(asto_long).mark_line(point=True).encode(
+            x=alt.X('dataFimApuracao', title='Período de Apuração (Fim)'),
+            y=alt.Y('Valor', title='Valor (R$)'),
+            color='Métrica',
+            tooltip=['dataFimApuracao', alt.Tooltip('Valor', format='$,.2f'), 'Métrica']
+        ).properties(title='Evolução Semanal de Valores do Asto').interactive()
     
-    asto_chart = alt.Chart(asto_long).mark_line(point=True).encode(
-        x=alt.X('dataFimApuracao', title='Período de Apuração (Fim)'),
-        y=alt.Y('Valor', title='Valor (R$)'),
-        color='Métrica',
-        tooltip=['dataFimApuracao', alt.Tooltip('Valor', format='$,.2f'), 'Métrica']
-    ).properties(title='Evolução Semanal de Valores do Asto').interactive()
-
-    st.altair_chart(asto_chart, use_container_width=True)
+        st.altair_chart(asto_chart, use_container_width=True)
+    else:
+        st.info("Nenhum dado de Asto encontrado no período filtrado.")
+        
     st.markdown("---")
 
 
-    # --- 2. PERFORMANCE BIONIO & ROVEMAPAY (Dados de Upload) ---
+    # --- 2. PERFORMANCE BIONIO & ROVEMAPAY (Dados de Banco de Dados) ---
     st.header("2. Performance Bionio e Rovema Pay (Dados de Banco de Dados)")
     
-    # CHAMA A NOVA FUNÇÃO DE BUSCA DO FIRESTORE
     bionio_df_db = get_latest_uploaded_data('Bionio')
     rovemapay_df_db = get_latest_uploaded_data('RovemaPay')
 
     if bionio_df_db.empty and rovemapay_df_db.empty:
-         st.warning("⚠️ **PENDÊNCIA:** Não há dados de Bionio ou Rovema Pay no Banco de Dados. Acesse a página **Upload de Dados** e envie os arquivos CSV/Excel para popular o Dashboard.")
+         st.warning("⚠️ **PENDÊNCIA:** Não há dados de Bionio ou Rovema Pay no Banco de Dados. Acesse a página **Upload de Dados** e envie os arquivos.")
          return
          
     # BIONIO
     st.subheader("BIONIO: Evolução do Valor Total dos Pedidos")
     if not bionio_df_db.empty:
         bionio_chart = alt.Chart(bionio_df_db).mark_bar().encode(
-            x=alt.X('Mês:O', title='Mês'),
+            # O Mês deve ser tratado como Coluna Nominal (Ordinal) para o agrupamento correto do Altair
+            x=alt.X('Mês:O', title='Mês'), 
             y=alt.Y('Valor Total Pedidos', title='Valor Total (R$)'),
             tooltip=['Mês', alt.Tooltip('Valor Total Pedidos', format='$,.2f')]
         ).properties(title='Volume Mensal de Pedidos Bionio').interactive()
@@ -83,6 +87,8 @@ def dashboard_page():
     
     # ROVEMA PAY
     st.subheader("ROVEMA PAY: Receita e Taxa Média por Status")
+    
+    # FIX CRÍTICO: Checagem individual do DataFrame antes do render
     if not rovemapay_df_db.empty:
         col_r1, col_r2 = st.columns(2)
         
@@ -90,15 +96,16 @@ def dashboard_page():
         rovema_revenue_chart = alt.Chart(rovemapay_df_db).mark_bar().encode(
             x=alt.X('Mês:O', title='Mês'),
             y=alt.Y('Receita', title='Receita (R$)'),
-            color='Status',
-            tooltip=['Mês', 'Status', alt.Tooltip('Receita', format='$,.2f')]
+            color='status', # Nome da coluna deve ser minúsculo conforme salvamento
+            tooltip=['Mês', 'status', alt.Tooltip('Receita', format='$,.2f')]
         ).properties(title='Receita Total por Mês e Status de Pagamento').interactive()
+        
         col_r1.altair_chart(rovema_revenue_chart, use_container_width=True)
         
         # Indicador de Taxa Média
         avg_taxa = rovemapay_df_db['Taxa_Media'].mean()
         col_r2.metric("Rovema Pay: Taxa Média Geral", f"{avg_taxa:.2f}%", help="Média do Custo Total da Transação sobre o Bruto")
-        col_r2.dataframe(rovemapay_df_db[['Mês', 'Status', 'Taxa_Media']].sort_values('Mês', ascending=False), use_container_width=True)
+        col_r2.dataframe(rovemapay_df_db[['Mês', 'status', 'Taxa_Media']].sort_values('Mês', ascending=False), use_container_width=True)
     else:
         st.info("Nenhum dado de Rovema Pay encontrado no Banco de Dados.")
 
