@@ -137,7 +137,7 @@ def login_user(email: str, password: str):
         user_data = user_doc.to_dict()
         role = user_data.get('role', 'Usuário')
         
-        # **NOVA VERIFICAÇÃO DE STATUS**
+        # **VERIFICAÇÃO DE STATUS**
         status = user_data.get('status', 'ativo')
         if status == 'inativo':
             log_event("LOGIN_FAIL", f"Tentativa de login de usuário inativo: {email}.")
