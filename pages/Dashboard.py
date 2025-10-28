@@ -58,7 +58,7 @@ def dashboard_page():
         return
 
     st.title("ROVEMA BANK: Dashboard de Transações")
-    st.caption("Powered by KR8")
+    # REMOVIDO: st.caption("Powered by KR8")
     log_event("VIEW_DASHBOARD", "Visualizando o dashboard principal.")
     
     # --- 0. FILTROS NA BARRA LATERAL (Sidebar) ---
@@ -232,7 +232,7 @@ def dashboard_page():
         st.subheader("Clientes e Crescimento")
         st.dataframe(detalhamento_df.rename(columns={'Crescimento': 'Crescimento %'}), hide_index=True, use_container_width=True)
         st.markdown("Mostrando 1 a 10 de 99 clientes | [Anterior] [Próxima]")
-        st.button("Exportar CSV")
+        st.button("Exportar CSV") 
         
     # D2: Insights
     with col_d2:
@@ -240,8 +240,6 @@ def dashboard_page():
         st.success("✅ Destaque do Trimestre: Posto Sol Nascente cresceu 34% com forte aumento em transações Pix.")
         st.info("💡 Oportunidade: 5 clientes estão próximos de atingir novo patamar de faturamento. Considere campanhas de incentivo.")
         st.warning("⚠️ Atenção Necessária: Bar do João apresenta queda de 18%. Recomenda-se contato da equipe comercial.")
-        st.markdown("---")
-        st.caption("Powered by KR8")
 
 
 # Garante que a função da página é chamada
