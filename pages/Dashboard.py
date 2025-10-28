@@ -3,7 +3,7 @@ import altair as alt
 from datetime import date, timedelta
 import pandas as pd
 from fire_admin import log_event
-from utils.data_processing import fetch_asto_data, fetch_eliq_data, get_processed_data_from_last_upload
+from utils.data_processing import fetch_asto_data, fetch_eliq_data, get_latest_uploaded_data
 
 def dashboard_page():
     if not st.session_state.get('authenticated'):
@@ -16,7 +16,6 @@ def dashboard_page():
     # --- FILTROS GLOBAIS ---
     st.subheader("Filtros de Período")
     
-    # Define um intervalo padrão de 3 meses para os dados simulados
     default_end_date = date(2025, 10, 31)
     default_start_date = default_end_date - timedelta(days=90)
     
@@ -44,7 +43,6 @@ def dashboard_page():
     # ASTO: Evolução do Valor Transacionado vs Receita (Gráfico principal)
     st.subheader("ASTO: Evolução Valor Transacionado vs Receita")
     
-    # Transforma o DataFrame para o formato longo para Altair
     asto_long = asto_df.melt('dataFimApuracao', var_name='Métrica', value_name='Valor')
     
     asto_chart = alt.Chart(asto_long).mark_line(point=True).encode(
@@ -59,48 +57,54 @@ def dashboard_page():
 
 
     # --- 2. PERFORMANCE BIONIO & ROVEMAPAY (Dados de Upload) ---
-    st.header("2. Performance Bionio e Rovema Pay (Dados de Arquivo)")
+    st.header("2. Performance Bionio e Rovema Pay (Dados de Banco de Dados)")
     
-    bionio_df_sim = get_processed_data_from_last_upload('Bionio')
-    rovemapay_df_sim = get_processed_data_from_last_upload('RovemaPay')
+    # CHAMA A NOVA FUNÇÃO DE BUSCA DO FIRESTORE
+    bionio_df_db = get_latest_uploaded_data('Bionio')
+    rovemapay_df_db = get_latest_uploaded_data('RovemaPay')
 
-    if bionio_df_sim.empty or rovemapay_df_sim.empty:
-         st.warning("⚠️ **PENDÊNCIA:** Para visualizar os dados de Bionio e Rovema Pay, acesse a página **Upload de Dados** e envie os arquivos CSV/Excel.")
+    if bionio_df_db.empty and rovemapay_df_db.empty:
+         st.warning("⚠️ **PENDÊNCIA:** Não há dados de Bionio ou Rovema Pay no Banco de Dados. Acesse a página **Upload de Dados** e envie os arquivos CSV/Excel para popular o Dashboard.")
          return
-
+         
     # BIONIO
     st.subheader("BIONIO: Evolução do Valor Total dos Pedidos")
-    bionio_chart = alt.Chart(bionio_df_sim).mark_bar().encode(
-        x=alt.X('Mês:O', title='Mês'),
-        y=alt.Y('Valor Total Pedidos', title='Valor Total (R$)'),
-        tooltip=['Mês', alt.Tooltip('Valor Total Pedidos', format='$,.2f')]
-    ).properties(title='Volume Mensal de Pedidos Bionio').interactive()
-    st.altair_chart(bionio_chart, use_container_width=True)
+    if not bionio_df_db.empty:
+        bionio_chart = alt.Chart(bionio_df_db).mark_bar().encode(
+            x=alt.X('Mês:O', title='Mês'),
+            y=alt.Y('Valor Total Pedidos', title='Valor Total (R$)'),
+            tooltip=['Mês', alt.Tooltip('Valor Total Pedidos', format='$,.2f')]
+        ).properties(title='Volume Mensal de Pedidos Bionio').interactive()
+        st.altair_chart(bionio_chart, use_container_width=True)
+    else:
+        st.info("Nenhum dado de Bionio encontrado no Banco de Dados.")
     
     st.markdown("---")
     
     # ROVEMA PAY
     st.subheader("ROVEMA PAY: Receita e Taxa Média por Status")
-    
-    col_r1, col_r2 = st.columns(2)
-    
-    # Gráfico de Receita por Status (Pago vs. Antecipado)
-    rovema_revenue_chart = alt.Chart(rovemapay_df_sim).mark_bar().encode(
-        x=alt.X('Mês:O', title='Mês'),
-        y=alt.Y('Receita', title='Receita (R$)'),
-        color='Status',
-        tooltip=['Mês', 'Status', alt.Tooltip('Receita', format='$,.2f')]
-    ).properties(title='Receita Total por Mês e Status de Pagamento').interactive()
-    col_r1.altair_chart(rovema_revenue_chart, use_container_width=True)
-    
-    # Indicador de Taxa Média
-    avg_taxa = rovemapay_df_sim['Taxa_Media'].mean()
-    col_r2.metric("Rovema Pay: Taxa Média Geral", f"{avg_taxa:.2f}%", help="Média do Custo Total da Transação sobre o Bruto")
-    col_r2.dataframe(rovemapay_df_sim[['Mês', 'Status', 'Taxa_Media']].sort_values('Mês', ascending=False), use_container_width=True)
+    if not rovemapay_df_db.empty:
+        col_r1, col_r2 = st.columns(2)
+        
+        # Gráfico de Receita por Status (Pago vs. Antecipado)
+        rovema_revenue_chart = alt.Chart(rovemapay_df_db).mark_bar().encode(
+            x=alt.X('Mês:O', title='Mês'),
+            y=alt.Y('Receita', title='Receita (R$)'),
+            color='Status',
+            tooltip=['Mês', 'Status', alt.Tooltip('Receita', format='$,.2f')]
+        ).properties(title='Receita Total por Mês e Status de Pagamento').interactive()
+        col_r1.altair_chart(rovema_revenue_chart, use_container_width=True)
+        
+        # Indicador de Taxa Média
+        avg_taxa = rovemapay_df_db['Taxa_Media'].mean()
+        col_r2.metric("Rovema Pay: Taxa Média Geral", f"{avg_taxa:.2f}%", help="Média do Custo Total da Transação sobre o Bruto")
+        col_r2.dataframe(rovemapay_df_db[['Mês', 'Status', 'Taxa_Media']].sort_values('Mês', ascending=False), use_container_width=True)
+    else:
+        st.info("Nenhum dado de Rovema Pay encontrado no Banco de Dados.")
+
 
 # Garante que a função da página é chamada
 if st.session_state.get('authenticated'):
     dashboard_page()
 else:
-    # A página Dashboard não deve ser acessada sem login
     pass
