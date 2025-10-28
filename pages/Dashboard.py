@@ -55,6 +55,7 @@ def dashboard_page():
         return
 
     st.title("ROVEMA BANK: Dashboard de Transações")
+    st.caption("Filtros Ativos na Barra Lateral")
     log_event("VIEW_DASHBOARD", "Visualizando o dashboard principal.")
     
     # --- 0. FILTROS NA BARRA LATERAL (Sidebar) ---
@@ -110,7 +111,7 @@ def dashboard_page():
             fetch_asto_data(start_date, end_date),
             fetch_eliq_data(start_date, end_date),
             get_latest_uploaded_data('Bionio', start_date, end_date),
-            get_latest_uploaded_data('RovemaPay', start_date, end_date)
+            get_latest_uploaded_data('Rovema Pay', start_date, end_date)
         )
 
     asto_df, eliq_df, bionio_df_db, rovemapay_df_db = load_data(start_date, end_date, st.session_state['update_counter'])
