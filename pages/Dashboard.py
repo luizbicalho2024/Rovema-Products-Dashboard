@@ -4,9 +4,8 @@ import pandas as pd
 from datetime import date, timedelta
 from fire_admin import log_event
 from utils.data_processing import fetch_asto_data, fetch_eliq_data, get_latest_uploaded_data
-from pandas.api.types import is_datetime64_any_dtype as is_datetime
 
-# --- Funções Auxiliares de Visualização (Mapeando o PDF) ---
+# --- Funções Auxiliares de Visualização ---
 
 def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
     """Calcula as métricas principais para o header."""
@@ -25,7 +24,6 @@ def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
 def get_ranking_data(rovemapay_df):
     """Simula a geração dos rankings de crescimento/queda e participação por bandeira."""
         
-    # --- Top 10 Queda (Hardcoded para replicar o layout do PDF) ---
     ranking_queda_data = {
         'Cliente': ['Posto Avenida', 'Concessionária RodarMais', 'Restaurante Dom Pepe', 'Loja Universo Tech', 'Farmácia Popular', 'Posto Panorama', 'Oficina Auto Luz', 'Loja Bella Casa', 'Auto Mecânica Pereira', 'Livraria Estilo'],
         'CNPJ': ['85.789.123/0001-45', '18.456.789/0001-75', '86.456.789/0001-55', '87.987.654/0001-65', '19.567.890/0001-85', '20.678.901/0001-95', '88.234.567/0001-75', '21.789.012/0001-05', '89.567.890/0001-85', '90.678.901/0001-95'],
@@ -33,7 +31,6 @@ def get_ranking_data(rovemapay_df):
     }
     ranking_queda_df = pd.DataFrame(ranking_queda_data)
     
-    # --- Detalhamento por Cliente (Hardcoded para replicar o layout do PDF) ---
     detalhamento_data = {
         'CNPJ': ['94.012.345/0001-35', '95.123.456/0001-45', '12.345.678/0001-10', '45.123.678/0001-80', '96.234.567/0001-55', '56.789.123/0001-30', '23.456.789/0001-20', '97.345.678/0001-65', '31.234.567/0001-50', '98.456.789/0001-75'],
         'Cliente': ['Posto Sol Nascente', 'Supermercado Real', 'Auto Peças Silva', 'Concessionária Fenix', 'Papelaria Central', 'Padaria Doce Sabor', 'Supermercado Oliveira', 'Auto Mecânica Lima', 'Posto Vitória', 'Oficina do Tonho'],
@@ -44,7 +41,6 @@ def get_ranking_data(rovemapay_df):
     }
     detalhamento_df = pd.DataFrame(detalhamento_data)
     
-    # --- Participação por Bandeira (Mapeando do Detalhamento) ---
     bandeira_df = detalhamento_df.groupby('Bandeira')['Nº Vendas'].sum().reset_index()
     bandeira_df = bandeira_df.rename(columns={'Nº Vendas': 'Valor'})
 
@@ -114,7 +110,7 @@ def dashboard_page():
             fetch_asto_data(start_date, end_date),
             fetch_eliq_data(start_date, end_date),
             get_latest_uploaded_data('Bionio', start_date, end_date),
-            get_latest_uploaded_data('Rovema Pay', start_date, end_date)
+            get_latest_uploaded_data('RovemaPay', start_date, end_date)
         )
 
     asto_df, eliq_df, bionio_df_db, rovemapay_df_db = load_data(start_date, end_date, st.session_state['update_counter'])
@@ -186,14 +182,8 @@ def dashboard_page():
             
             # 2. ASTO (Cria o Mês e combina)
             asto_temp = asto_df.rename(columns={'dataFimApuracao': 'Mês_date', 'valorBruto': 'Liquido', 'Receita': 'Receita'}).copy()
-            
-            # FIX: Cria a coluna 'Mês' a partir da coluna de data correta
-            if is_datetime(asto_temp['Mês_date']):
-                asto_temp['Mês'] = asto_temp['Mês_date'].dt.to_period('M').astype(str)
-            else:
-                 # Fallback, embora os mocks garantam que é datetime
-                 asto_temp['Mês'] = asto_temp['Mês_date'].astype(str).str[:7]
-            
+            # FIX: Cria a coluna 'Mês' a partir da coluna de data
+            asto_temp['Mês'] = pd.to_datetime(asto_temp['Mês_date']).dt.to_period('M').astype(str)
             asto_long = asto_temp.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
             
             final_evolucao_df = pd.concat([rovema_long, asto_long]).groupby(['Mês', 'Métrica'])['Valor'].sum().reset_index()
@@ -252,6 +242,7 @@ def dashboard_page():
             carteira_chart = alt.Chart(carteira_df).mark_bar().encode(
                 x=alt.X("Carteira:N", title=""),
                 y=alt.Y("Receita Total", title="Receita (R$)"),
+                color=alt.Color("Carteira:N"), # Adicionando cor para melhor visualização
                 tooltip=["Carteira", alt.Tooltip("Receita Total", format="$,.2f")]
             ).properties(title="").interactive()
             st.altair_chart(carteira_chart, use_container_width=True)
@@ -304,4 +295,7 @@ def dashboard_page():
 
 
 # Garante que a função da página é chamada
-if st.session_state.get('
+if st.session_state.get('authenticated'):
+    dashboard_page()
+else:
+    pass
