@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from fire_admin import upload_file_and_store_ref, log_event
+from fire_admin import save_processed_data_to_firestore, log_event
 from utils.data_processing import process_uploaded_file
 
 def upload_data_page():
@@ -11,10 +11,11 @@ def upload_data_page():
     st.title("📤 Upload de Dados de Bionio e Rovema Pay")
     log_event("VIEW_UPLOAD_DATA", "Acessando a página de upload de dados.")
 
-    st.info("Envie aqui os arquivos CSV/Excel de Bionio ou Rovema Pay para que sejam armazenados de forma segura no Firebase Storage para processamento futuro.")
+    st.info("Envie aqui os arquivos CSV/Excel. Os dados serão **processados e salvos diretamente no Firestore** (Banco de Dados).")
 
     col_u1, col_u2 = st.columns(2)
-
+    df_to_save = None 
+    
     with col_u1:
         st.subheader("Configuração do Upload")
         product = st.selectbox("Produto", ['Bionio', 'RovemaPay'], help="Selecione o produto ao qual o relatório se refere.")
@@ -23,38 +24,42 @@ def upload_data_page():
             type=['csv', 'xlsx']
         )
         
-        if st.button(f"Processar e Armazenar no Firebase"):
+        if st.button(f"Processar e Salvar no Firestore"):
             if uploaded_file is not None:
-                # 1. Processamento e Validação (Prévia)
+                # 1. Processamento e Validação
                 with st.spinner(f"Validando e processando arquivo de {product}..."):
                     success_proc, message_proc, df_preview = process_uploaded_file(uploaded_file, product)
+                    df_to_save = df_preview.copy()
                     
                 if not success_proc:
                     st.error(f"Falha no processamento: {message_proc}")
                     return
 
-                # 2. Upload para o Firebase Storage
-                with st.spinner(f"Enviando arquivo para o Firebase Storage..."):
-                    # O arquivo é reaberto para o upload, pois a leitura acima o consumiu
-                    uploaded_file.seek(0) 
-                    success_upload, message_upload = upload_file_and_store_ref(uploaded_file, product)
+                if df_to_save.empty:
+                    st.warning("O arquivo foi processado, mas não contém dados válidos após a limpeza.")
+                    return
+
+                # 2. Salvamento no Firestore
+                with st.spinner(f"Salvando {len(df_to_save)} registros no Firestore..."):
+                    # CHAMA A FUNÇÃO DE SALVAMENTO NO BANCO
+                    success_save, message_save = save_processed_data_to_firestore(product, df_to_save)
                 
-                if success_upload:
-                    st.success(message_upload)
+                if success_save:
+                    st.success(message_save)
+                    # Força a atualização do Dashboard limpando o cache
+                    st.cache_data.clear() 
                 else:
-                    st.error(message_upload)
+                    st.error(message_save)
                 
                 # 3. Mostrar Preview
                 with col_u2:
                     st.subheader(f"Preview (Primeiras 10 linhas processadas)")
-                    if df_preview is not None and not df_preview.empty:
-                        st.dataframe(df_preview.head(10), use_container_width=True)
-                        st.info("O arquivo foi armazenado. O Dashboard agora pode utilizar dados simulados com base neste upload.")
+                    st.dataframe(df_to_save.head(10), use_container_width=True)
+                    st.info("Dados processados e salvos no Banco de Dados.")
 
             else:
                 st.warning("Por favor, selecione um arquivo para upload.")
 
-# Garante que a função da página é chamada
 if st.session_state.get('authenticated'):
     upload_data_page()
 else:
