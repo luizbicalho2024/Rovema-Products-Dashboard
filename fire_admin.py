@@ -6,59 +6,71 @@ import requests
 import pandas as pd
 from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp 
 
-# --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE ---
+# --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE (ROBUSTA) ---
 
 @st.cache_resource
-def get_web_api_key():
-    # Busca a chave da API Web e remove espaços em branco
+def get_credentials_dict():
+    """Lê todas as credenciais do st.secrets e garante a limpeza."""
+    
+    # 1. Carrega o Service Account como dicionário
+    sa_config = st.secrets.get("firebase_service_account")
+    if not sa_config:
+        st.error("ERRO CRÍTICO: O bloco [firebase_service_account] não foi encontrado nos Secrets.")
+        return None, None
+        
+    # 2. Carrega a Chave da API Web de forma defensiva
     api_key = st.secrets.get("FIREBASE_WEB_API_KEY")
-    return api_key.strip() if isinstance(api_key, str) else None
+    if api_key is None:
+        # Tenta a leitura da chave aninhada como último recurso (Embora não seja a prática ideal)
+        api_key = sa_config.get("FIREBASE_WEB_API_KEY", "")
+        
+    # 3. Limpeza Final da Private Key (Removendo espaços e tratando o formato)
+    if 'private_key' in sa_config:
+        # Tenta remover espaços indesejados, o que resolve 99% dos erros de 'Invalid private key'
+        sa_config['private_key'] = sa_config['private_key'].strip()
+        
+    # Limpa a chave da API Web
+    api_key = api_key.strip() if isinstance(api_key, str) else None
 
-FIREBASE_WEB_API_KEY = get_web_api_key()
+    return sa_config, api_key
+
+CREDENTIALS_DICT, FIREBASE_WEB_API_KEY = get_credentials_dict()
 
 @st.cache_resource
 def initialize_firebase():
     """Inicializa o Firebase Admin SDK e o Firestore."""
     
-    if "firebase_service_account" not in st.secrets:
-        st.error("ERRO: Credenciais do Service Account não encontradas.")
+    if CREDENTIALS_DICT is None:
         return None, None, None, None
 
     try:
-        cred_dict = dict(st.secrets["firebase_service_account"])
-        
-        # --- CORREÇÃO DA PRIVATE KEY (Robusta contra espaços/formatação) ---
-        if 'private_key' in cred_dict:
-            # 1. Tenta tratar barras invertidas (formato TOML/JSON)
-            key_content = cred_dict['private_key'].replace('\\n', '\n')
-            # 2. Garante que não há espaços em branco extras (CRUCIAL)
-            cred_dict['private_key'] = key_content.strip()
-            
-        # Tenta inicializar com a chave corrigida
-        cred = credentials.Certificate(cred_dict)
+        # Usa o dicionário carregado (limpo) para criar o objeto de credenciais
+        cred = credentials.Certificate(CREDENTIALS_DICT)
 
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred)
             
         db = firestore.client()
-        bucket = None # Storage foi removido
+        bucket = None 
         
         st.session_state['db'] = db
         st.session_state['bucket'] = bucket
         
-        return auth, db, bucket, cred_dict['project_id']
+        return auth, db, bucket, CREDENTIALS_DICT.get('project_id')
     except Exception as e:
-        # Imprime o erro no Streamlit Cloud Logs (console)
+        # Esta mensagem será exibida se a Private Key for inválida
         print(f"Erro Crítico de Inicialização do Firebase: {e}")
         st.error(f"Erro ao inicializar o Firebase: Falha na validação das credenciais.")
         return None, None, None, None
 
 auth_service, db, bucket, project_id = initialize_firebase()
 
+
 # --- 2. FUNÇÕES DE LOGS (Auditoria) ---
+
 def log_event(action: str, details: str = ""):
     """Registra um evento de log no Firestore."""
-    if 'db' not in st.session_state or st.session_state['db'] is None:
+    if st.session_state.get('db') is None:
         return
     
     user_email = st.session_state.get('user_email', 'SISTEMA')
@@ -84,6 +96,7 @@ def login_user(email: str, password: str):
     """
     if not FIREBASE_WEB_API_KEY:
         log_event("LOGIN_ERROR", "Chave da API Web não configurada ou vazia nos secrets.")
+        # Se falhou aqui, o Service Account (DB) provavelmente falhou também
         return False, "Erro de configuração: Chave da API Web não encontrada ou está vazia."
         
     API_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
@@ -105,10 +118,8 @@ def login_user(email: str, password: str):
             log_event("LOGIN_FAIL", f"Autenticação falhou para {email}. UID não retornado.")
             return False, "E-mail ou senha incorretos."
 
-        # Verifica se o DB foi inicializado antes de tentar usá-lo
-        if st.session_state['db'] is None:
-            log_event("LOGIN_ERROR", "Firestore indisponível devido a falha nas credenciais iniciais.")
-            return False, "Erro crítico de serviço: Contate o administrador."
+        if st.session_state.get('db') is None:
+            return False, "Erro crítico de serviço: Contate o administrador. (DB não inicializado)"
 
         user_doc = st.session_state['db'].collection('users').document(user_uid).get()
         if not user_doc.exists:
@@ -154,7 +165,7 @@ def logout_user():
 
 def create_user(email, password, role, name):
     """Cria um novo usuário no Firebase Auth e define o papel no Firestore."""
-    if 'db' not in st.session_state or not auth_service or st.session_state['db'] is None:
+    if st.session_state.get('db') is None or not auth_service:
         return False, "Serviços Firebase indisponíveis. Contate o administrador."
     
     try:
@@ -173,7 +184,7 @@ def create_user(email, password, role, name):
 
 def get_all_users():
     """Retorna a lista completa de usuários e seus papéis."""
-    if 'db' not in st.session_state or st.session_state['db'] is None:
+    if st.session_state.get('db') is None:
         return []
     
     try:
@@ -197,7 +208,7 @@ def save_processed_data_to_firestore(product_name: str, df_data: pd.DataFrame):
     Converte o DataFrame processado em uma lista de dicionários e o salva
     em uma nova coleção no Firestore, usando Batch Writes para eficiência.
     """
-    if 'db' not in st.session_state or st.session_state['db'] is None:
+    if st.session_state.get('db') is None:
         return False, "Firestore não inicializado. Não é possível salvar dados."
 
     data_records = df_data.to_dict('records')
