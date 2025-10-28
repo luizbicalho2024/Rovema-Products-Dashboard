@@ -3,7 +3,7 @@ import altair as alt
 import pandas as pd
 from datetime import date, timedelta
 from fire_admin import log_event
-from utils.data_processing import get_latest_uploaded_data # Remove fetch_asto_data/fetch_eliq_data
+from utils.data_processing import get_latest_uploaded_data
 
 # --- Funções Auxiliares de Visualização (Mapeando o PDF) ---
 
@@ -12,7 +12,6 @@ def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
     
     rovema_revenue = rovemapay_df['Receita'].sum() if not rovemapay_df.empty else 0
     bionio_value = bionio_df['Valor Total Pedidos'].sum() if not bionio_df.empty else 0
-    # ASTO: Usamos a soma da coluna Receita diretamente do dataframe agregado
     asto_revenue = asto_df['Receita'].sum() if not asto_df.empty else 0
     
     total_revenue_sim = 2_146_293.35 # Valor simulado do PDF
@@ -43,7 +42,7 @@ def get_ranking_data(rovemapay_df):
     detalhamento_df = pd.DataFrame(detalhamento_data)
     
     bandeira_df = detalhamento_df.groupby('Bandeira')['Nº Vendas'].sum().reset_index()
-    bandeira_df = bandeira_df.rename(columns={'Nº Vendas': 'Valor'})
+    bandeira_df = bandeal_df.rename(columns={'Nº Vendas': 'Valor'})
 
     return ranking_queda_df, detalhamento_df, bandeira_df
 
@@ -56,6 +55,7 @@ def dashboard_page():
         return
 
     st.title("ROVEMA BANK: Dashboard de Transações")
+    st.caption("Filtros Ativos na Barra Lateral")
     log_event("VIEW_DASHBOARD", "Visualizando o dashboard principal.")
     
     # --- 0. FILTROS NA BARRA LATERAL (Sidebar) ---
@@ -114,7 +114,6 @@ def dashboard_page():
             get_latest_uploaded_data('Rovema Pay', start_date, end_date)
         )
 
-    # Carrega dados
     asto_df, eliq_df, bionio_df_db, rovemapay_df_db = load_data(start_date, end_date, st.session_state['update_counter'])
     
     
@@ -260,7 +259,6 @@ def dashboard_page():
     # R1: TOP 10 QUEDA (Estático)
     with col_r1:
         st.subheader("Top 10 Queda")
-        # FIX: Corrigido o erro de sintaxe de renomeação aqui.
         st.dataframe(ranking_queda_df[['Cliente', 'CNPJ', 'Variação']].rename(columns={'Variação': 'Variação %'}), hide_index=True, use_container_width=True)
 
     # R2: TOP 10 CRESCIMENTO (Estático)
