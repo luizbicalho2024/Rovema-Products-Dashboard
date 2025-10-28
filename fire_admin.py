@@ -2,28 +2,33 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, auth, firestore, storage
 import json
+import requests # Importe a biblioteca requests
 
 # --- Configuração do Firebase ---
+
+# Adiciona a função para pegar a chave da API
+@st.cache_resource
+def get_web_api_key():
+    return st.secrets.get("FIREBASE_WEB_API_KEY")
+
+FIREBASE_WEB_API_KEY = get_web_api_key()
+
 @st.cache_resource
 def initialize_firebase():
     """Inicializa o Firebase Admin SDK usando Streamlit Secrets."""
     
-    # Verifica se as credenciais estão disponíveis nos secrets
     if "firebase_service_account" not in st.secrets:
         st.error("ERRO: As credenciais do Firebase não foram encontradas no `.streamlit/secrets.toml`.")
         return None, None, None, None
 
-    # Converte o dicionário de secrets para o formato de credenciais
     try:
         cred_dict = dict(st.secrets["firebase_service_account"])
         
-        # O campo 'private_key' pode vir com quebras de linha que precisam ser tratadas
         if 'private_key' in cred_dict:
             cred_dict['private_key'] = cred_dict['private_key'].replace('\\n', '\n')
             
         cred = credentials.Certificate(cred_dict)
 
-        # Inicializa o app Firebase (só uma vez)
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred, {
                 'storageBucket': f"{cred_dict['project_id']}.appspot.com"
@@ -44,6 +49,7 @@ auth_service, db, bucket, project_id = initialize_firebase()
 
 # --- Funções de Logs (Logs Page) ---
 
+# ... log_event function (MANTER IGUAL) ...
 def log_event(action: str, details: str = ""):
     """Registra um evento de log no Firestore."""
     if 'db' not in st.session_state:
@@ -65,44 +71,67 @@ def log_event(action: str, details: str = ""):
 # --- Funções de Autenticação (Login) ---
 
 def login_user(email: str, password: str):
-    """Autentica o usuário e recupera o papel (role) no Firestore."""
-    if not auth_service:
-        return False, "Serviço de autenticação não inicializado."
-    
-    try:
-        # 1. Autenticação (Firebase Auth)
-        # Nota: O SDK Admin não tem um método direto de login com email/senha para clientes.
-        # Em produção, usa-se a REST API ou um SDK cliente. Para simplificar e manter no Admin,
-        # simularemos a verificação de credenciais e dependemos da Firestore para o papel.
-        # A maneira mais segura com o SDK Admin é garantir que o usuário existe e buscar o papel.
-        user = auth_service.get_user_by_email(email)
+    """
+    Autentica o usuário usando a REST API (para verificar a senha) 
+    e recupera o papel (role) no Firestore.
+    """
+    if not FIREBASE_WEB_API_KEY:
+        log_event("LOGIN_ERROR", "Chave da API Web não configurada nos secrets.")
+        return False, "Erro de configuração: Chave da API Web não encontrada."
         
-        # 2. Busca o papel (Role) no Firestore
-        user_doc = st.session_state['db'].collection('users').document(user.uid).get()
+    API_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
+    
+    payload = {
+        "email": email,
+        "password": password,
+        "returnSecureToken": True
+    }
+
+    try:
+        # 1. Autenticação de Senha (Firebase REST API)
+        response = requests.post(API_URL, json=payload)
+        response.raise_for_status() # Lança exceção para status HTTP de erro (4xx ou 5xx)
+        
+        data = response.json()
+        user_uid = data.get('localId')
+
+        if not user_uid:
+            log_event("LOGIN_FAIL", f"Autenticação falhou para {email}. UID não retornado.")
+            return False, "E-mail ou senha incorretos."
+
+        # 2. Busca o papel (Role) no Firestore usando o UID
+        user_doc = st.session_state['db'].collection('users').document(user_uid).get()
         if not user_doc.exists:
-            log_event("LOGIN_FAIL", f"Usuário {email} autenticado, mas sem papel de acesso (UID: {user.uid}).")
-            return False, "Usuário não autorizado ou sem papel de acesso definido."
+            log_event("LOGIN_FAIL", f"Usuário {email} autenticado, mas sem papel de acesso (UID: {user_uid}).")
+            return False, "Usuário autenticado, mas sem papel de acesso definido. Contate o administrador."
         
         user_data = user_doc.to_dict()
-        role = user_data.get('role', 'Usuário') # Padrão para Usuário se não definido
+        role = user_data.get('role', 'Usuário')
         
         # 3. Configura a sessão
         st.session_state['authenticated'] = True
         st.session_state['user_email'] = email
         st.session_state['user_role'] = role
-        st.session_state['user_uid'] = user.uid
+        st.session_state['user_uid'] = user_uid
         
         log_event("LOGIN_SUCCESS", f"Usuário {email} logado com sucesso. Papel: {role}.")
         return True, "Login bem-sucedido!"
         
-    except firebase_admin._auth_utils.UserNotFoundError:
-        log_event("LOGIN_FAIL", f"Tentativa de login falhou. E-mail não encontrado: {email}.")
-        return False, "E-mail ou senha incorretos."
+    except requests.exceptions.HTTPError as e:
+        error_json = e.response.json()
+        error_code = error_json.get('error', {}).get('message', 'UNKNOWN_ERROR')
+        
+        # Códigos de erro comuns do Firebase Auth
+        if error_code in ["EMAIL_NOT_FOUND", "INVALID_PASSWORD", "USER_DISABLED"]:
+            log_event("LOGIN_FAIL", f"Tentativa de login falhou. Erro: {error_code}.")
+            return False, "E-mail ou senha incorretos."
+        
+        log_event("LOGIN_ERROR", f"Erro HTTP crítico de login para {email}: {error_code}")
+        return False, f"Erro na autenticação. Contate o administrador. (Código: {error_code})"
+    
     except Exception as e:
-        # Captura erros como senha incorreta (embora o SDK Admin não verifique senhas diretamente,
-        # ele capturaria outros erros de API/permissão)
-        log_event("LOGIN_ERROR", f"Erro crítico de login para {email}: {e}")
-        return False, "Erro na autenticação. Verifique e-mail/senha ou contate o administrador."
+        log_event("LOGIN_ERROR", f"Erro inesperado de login para {email}: {e}")
+        return False, "Erro inesperado na autenticação. Tente novamente."
 
 def logout_user():
     """Limpa o estado da sessão e desloga o usuário."""
@@ -115,6 +144,7 @@ def logout_user():
 
 # --- Funções de Gerenciamento de Acessos (Admin Page) ---
 
+# ... create_user function (MANTER IGUAL) ...
 def create_user(email, password, role, name):
     """Cria um novo usuário no Firebase Auth e define o papel no Firestore."""
     if 'db' not in st.session_state:
@@ -133,6 +163,7 @@ def create_user(email, password, role, name):
         log_event("ADMIN_ACTION_FAIL", f"Falha ao criar usuário {email}: {e}")
         return False, f"Erro ao criar usuário: {e}"
 
+# ... get_all_users function (MANTER IGUAL) ...
 def get_all_users():
     """Retorna a lista completa de usuários e seus papéis."""
     if 'db' not in st.session_state:
@@ -153,6 +184,7 @@ def get_all_users():
         
 # --- Funções de Upload e Armazenamento (Upload Page) ---
 
+# ... upload_file_and_store_ref function (MANTER IGUAL) ...
 def upload_file_and_store_ref(uploaded_file, product_name):
     """
     Armazena o arquivo no Storage e registra a referência no Firestore.
@@ -167,7 +199,8 @@ def upload_file_and_store_ref(uploaded_file, product_name):
         
         # Faz o upload para o Storage
         blob = st.session_state['bucket'].blob(file_path)
-        blob.upload_from_file(uploaded_file, content_type=uploaded_file.type, rewind=True)
+        # O rewind é crucial após a leitura inicial do Streamlit
+        blob.upload_from_file(uploaded_file, content_type=uploaded_file.type, rewind=True) 
         
         # Registra o upload no Firestore
         st.session_state['db'].collection('file_uploads').add({
