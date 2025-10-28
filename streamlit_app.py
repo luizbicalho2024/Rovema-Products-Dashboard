@@ -74,6 +74,22 @@ def load_css():
     </style>
     """, unsafe_allow_html=True)
 
+# --- Função de Verificação de Usuários (Cacheada) ---
+@st.cache_data(ttl=3600) # Cacheia o resultado por 1 hora
+def check_if_users_exist(db_conn):
+    """Verifica (com cache) se algum usuário existe na coleção 'users'."""
+    if db_conn:
+        try:
+            # Faz a leitura mínima necessária
+            docs = db_conn.collection('users').limit(1).get()
+            return len(docs) > 0 # Retorna True se > 0 usuários existirem
+        except Exception as e:
+            # Se a leitura falhar (ex: permissão, quota inicial), loga e assume que *não* deve mostrar o alerta
+            print(f"ERRO Firestore (Check Users): {e}")
+            # Não mostra st.error aqui para não poluir a UI de login
+            return True # Assume que usuários existem ou erro impede a verificação
+    return True # Assume que usuários existem se DB não estiver conectado
+
 # 1. Inicializa o Firebase
 initialization_success = initialize_firebase()
 
@@ -86,21 +102,16 @@ if 'authenticated' not in st.session_state:
 
 if not st.session_state['authenticated']:
 
-    # Carrega o CSS customizado
     load_css()
 
-    # --- Layout do Container de Login ---
     st.markdown('<div class="login-container">', unsafe_allow_html=True)
 
-    # --- ADIÇÃO DA LOGO ---
-    # Certifique-se que a pasta 'assets' está na raiz do projeto
     try:
-        st.image("assets/logoRB.png", width=250) # Ajuste a largura (width) conforme necessário
+        st.image("assets/logoRB.png", width=250)
     except FileNotFoundError:
-        st.error("Erro: Arquivo 'assets/logoRB.png' não encontrado. Verifique o caminho.")
+        st.error("Erro: Arquivo 'assets/logoRB.png' não encontrado.")
     except Exception as e:
         st.error(f"Erro ao carregar a logo: {e}")
-    # --- FIM DA ADIÇÃO DA LOGO ---
 
     st.title("Rovema Bank Pulse 📈")
     st.subheader("Sistema de Gestão de Performance")
@@ -109,20 +120,21 @@ if not st.session_state['authenticated']:
     with st.form("login_form"):
         email = st.text_input("E-mail:")
         password = st.text_input("Senha:", type="password")
-        st.markdown("<br>", unsafe_allow_html=True) # Adiciona espaço
+        st.markdown("<br>", unsafe_allow_html=True)
         login_button = st.form_submit_button("Entrar")
 
         if login_button:
             success, message = login_user(email, password)
             if success:
                 st.success(f"Bem-vindo, {st.session_state['user_email']} ({st.session_state['user_role']})!")
+                # Limpa o cache da verificação de usuário após login bem-sucedido
+                check_if_users_exist.clear()
                 st.rerun()
             else:
                 st.error(message)
 
     st.markdown("---")
 
-    # Informações de Acesso (agora em um expander)
     with st.expander("Informações de Nível de Acesso"):
         st.markdown(
             """
@@ -131,26 +143,28 @@ if not st.session_state['authenticated']:
             """
         )
 
-    # Aviso de Setup (só aparece se necessário)
+    # Aviso de Setup (Usa a função cacheada)
     if initialization_success:
-        auth_service = st.session_state.get('auth_service')
         db = st.session_state.get('db')
+        # Chama a função cacheada - só vai ao DB na primeira vez ou a cada hora
+        users_exist = check_if_users_exist(db)
 
-        if auth_service and db and not db.collection('users').limit(1).get():
+        # Mostra o alerta apenas se a conexão funcionou E a função cacheada retornou False
+        if db and not users_exist:
              st.warning("⚠️ **Alerta de Setup:** Crie seu primeiro usuário 'Admin' manualmente no Console do Firebase.")
     else:
         st.error("Falha na conexão com o Firebase. Verifique os logs e o arquivo secrets.toml.")
 
-    # Fecha o container
     st.markdown('</div>', unsafe_allow_html=True)
 
 # --- Dashboard Principal (Após Login) ---
 else:
-    # Mostra a barra lateral
     st.sidebar.title("Rovema Bank Pulse")
     st.sidebar.markdown(f"**Usuário:** `{st.session_state['user_email']}`")
     st.sidebar.markdown(f"**Nível:** **`{st.session_state['user_role']}`**")
     st.sidebar.markdown("---")
 
     if st.sidebar.button("Logout", help="Sair do sistema com segurança"):
+        # Limpa o cache da verificação de usuário ao deslogar
+        check_if_users_exist.clear()
         logout_user()
