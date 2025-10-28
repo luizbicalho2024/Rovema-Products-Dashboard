@@ -5,10 +5,9 @@ import json
 import requests
 import pandas as pd
 from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp 
+from datetime import date # Importa date para tipagem
 
 # --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE (ROBUSTA) ---
-
-# NO ARQUIVO fire_admin.py (Substitua SÓ a função get_credentials_dict):
 
 def get_credentials_dict():
     """Lê todas as credenciais do st.secrets, faz uma cópia segura e garante a limpeza."""
@@ -18,33 +17,19 @@ def get_credentials_dict():
     if not sa_config_readonly:
         return None, None
         
-    # Cria um dicionário Python puro (mutável) a partir do objeto secrets
     sa_config = dict(sa_config_readonly)
         
-    # 1. Limpeza da Private Key (CRÍTICA)
     if 'private_key' in sa_config:
         key_content = sa_config['private_key']
-        # Remove espaços indesejados e trata as quebras de linha ('\n')
         if isinstance(key_content, str):
             key_content = key_content.strip().replace('\\n', '\n')
         sa_config['private_key'] = key_content
 
-    # 2. Carrega a Chave da API Web de forma MÚLTIPLA
-    
-    # Tenta ler do novo bloco [api_keys]
-    api_key_block = st.secrets.get("api_keys", {})
-    api_key = api_key_block.get("FIREBASE_WEB_API_KEY")
-    
-    # Se falhar, tenta ler do nível superior (o método anterior)
-    if not api_key:
-        api_key = st.secrets.get("FIREBASE_WEB_API_KEY")
-
-    # Limpa a chave
+    api_key = st.secrets.get("FIREBASE_WEB_API_KEY", "")
     api_key = api_key.strip() if isinstance(api_key, str) else None
 
     return sa_config, api_key
 
-# As funções inicializadoras são chamadas imediatamente para configurar o app.
 CREDENTIALS_DICT, FIREBASE_WEB_API_KEY = get_credentials_dict()
 
 @st.cache_resource
@@ -55,7 +40,6 @@ def initialize_firebase():
         return None, None, None, None
 
     try:
-        # Usa o dicionário CLONE e LIMPO para inicializar as credenciais
         cred = credentials.Certificate(CREDENTIALS_DICT)
 
         if not firebase_admin._apps:
@@ -69,7 +53,6 @@ def initialize_firebase():
         
         return auth, db, bucket, CREDENTIALS_DICT.get('project_id')
     except Exception as e:
-        # Imprime o erro no Streamlit Cloud Logs (console)
         print(f"Erro Crítico de Inicialização do Firebase: {e}")
         st.error(f"Erro ao inicializar o Firebase: Falha na validação das credenciais.")
         return None, None, None, None
@@ -101,31 +84,22 @@ def log_event(action: str, details: str = ""):
 # --- 3. FUNÇÕES DE AUTENTICAÇÃO (Login e Logout) ---
 
 def login_user(email: str, password: str):
-    """
-    Autentica o usuário usando a REST API (para verificar a senha) 
-    e recupera o papel (role) no Firestore.
-    """
+    """Autentica o usuário e recupera o papel (role) no Firestore."""
     if not FIREBASE_WEB_API_KEY:
         log_event("LOGIN_ERROR", "Chave da API Web não configurada ou vazia nos secrets.")
         return False, "Erro de configuração: Chave da API Web não encontrada ou está vazia."
         
     API_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
     
-    payload = {
-        "email": email,
-        "password": password,
-        "returnSecureToken": True
-    }
+    payload = {"email": email, "password": password, "returnSecureToken": True}
 
     try:
         response = requests.post(API_URL, json=payload)
         response.raise_for_status() 
-        
         data = response.json()
         user_uid = data.get('localId')
 
         if not user_uid:
-            log_event("LOGIN_FAIL", f"Autenticação falhou para {email}. UID não retornado.")
             return False, "E-mail ou senha incorretos."
 
         if st.session_state.get('db') is None:
@@ -201,71 +175,14 @@ def get_all_users():
     try:
         users_ref = st.session_state['db'].collection('users')
         docs = users_ref.stream()
-        user_list = []
-        for doc in docs:
-            data = doc.to_dict()
-            data['uid'] = doc.id
-            user_list.append(data)
+        user_list = [doc.to_dict() | {'uid': doc.id} for doc in docs]
         return user_list
     except Exception as e:
         st.error(f"Erro ao buscar usuários: {e}")
         return []
 
 
-# --- 5. FUNÇÃO: SALVAR DADOS PROCESSADOS NO FIRESTORE ---
-
-def save_processed_data_to_firestore(product_name: str, df_data: pd.DataFrame):
-    """
-    Converte o DataFrame processado em uma lista de dicionários e o salva
-    em uma nova coleção no Firestore, usando Batch Writes para eficiência.
-    """
-    if st.session_state.get('db') is None:
-        return False, "Firestore não inicializado. Não é possível salvar dados."
-
-    data_records = df_data.to_dict('records')
-    upload_metadata = {
-        'product': product_name,
-        'uploaded_by': st.session_state['user_email'],
-        'timestamp': server_timestamp,
-        'total_records': len(data_records),
-    }
-    
-    try:
-        upload_doc_ref = st.session_state['db'].collection('uploads_metadata').add(upload_metadata)
-        upload_id = upload_doc_ref[1].id if isinstance(upload_doc_ref, tuple) else upload_doc_ref.id
-
-        collection_name = f"data_{product_name.lower()}"
-        
-        batch = st.session_state['db'].batch()
-        
-        for i, record in enumerate(data_records):
-            record['upload_id'] = upload_id 
-            record['upload_timestamp'] = server_timestamp
-            
-            if 'Mês' in record:
-                record['period_key'] = record['Mês']
-
-            doc_ref = st.session_state['db'].collection(collection_name).document()
-            batch.set(doc_ref, record)
-            
-            if (i + 1) % 499 == 0:
-                batch.commit()
-                batch = st.session_state['db'].batch() 
-                
-        batch.commit()
-        
-        log_event("DATA_SAVE_SUCCESS", f"Dados de {product_name} salvos em {collection_name}. Total: {len(data_records)} registros.")
-        return True, f"Dados processados e salvos com sucesso na coleção '{collection_name}' (Total: {len(data_records)} registros)."
-    
-    except Exception as e:
-        log_event("DATA_SAVE_FAIL", f"Falha ao salvar dados de {product_name}: {e}")
-        return False, f"Erro ao salvar dados no Firestore: {e}"
-
-# NO ARQUIVO fire_admin.py:
-
-# ... (Mantenha as seções 1, 2, 3 e 4 IGUAIS) ...
-
-# --- 5. FUNÇÃO: SALVAR DADOS PROCESSADOS NO FIRESTORE ---
+# --- 5. FUNÇÃO: SALVAR DADOS NO FIRESTORE (API e Upload) ---
 
 def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type: str):
     """
@@ -277,14 +194,13 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
     data_records = df_data.to_dict('records')
     upload_metadata = {
         'product': product_name,
-        'source_type': source_type, # Novo campo: 'API' ou 'UPLOAD'
+        'source_type': source_type, 
         'uploaded_by': st.session_state.get('user_email', 'SISTEMA'),
         'timestamp': server_timestamp,
         'total_records': len(data_records),
     }
     
     try:
-        # Cria um documento para rastrear este salvamento/cache
         upload_doc_ref = st.session_state['db'].collection('data_metadata').add(upload_metadata)
         upload_id = upload_doc_ref[1].id if isinstance(upload_doc_ref, tuple) else upload_doc_ref.id
 
@@ -309,7 +225,6 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
                 batch.commit()
                 batch = st.session_state['db'].batch() 
                 
-        # Commita os documentos restantes
         batch.commit()
         
         log_event("DATA_SAVE_SUCCESS", f"Dados de {product_name} ({source_type}) salvos em {collection_name}. Total: {len(data_records)} registros.")
@@ -319,18 +234,16 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
         log_event("DATA_SAVE_FAIL", f"Falha ao salvar dados de {product_name} ({source_type}): {e}")
         return False, f"Erro ao salvar dados de {product_name} no Firestore: {e}"
 
-# Mantenha esta função antiga para compatibilidade com o Upload Page
+# Cria aliases para manter a compatibilidade
 save_processed_data_to_firestore = lambda product_name, df_data: save_data_to_firestore(product_name, df_data, 'UPLOAD')
 
-# --- Nova Função de Carregamento da API que Salva ---
 @st.cache_data(ttl=3600, show_spinner="Buscando dados da API e armazenando...")
 def fetch_api_and_save(product_name: str, start_date: date, end_date: date):
     """
-    Busca os dados via API Mock, salva no Firestore e retorna o DataFrame RAW.
-    Usaremos um TTL alto (1h) para evitar chamadas repetidas à "API Mock".
+    Busca os dados via API Mock (funções em utils/data_processing), salva no Firestore e retorna o DataFrame.
     """
+    from utils.data_processing import fetch_asto_data, fetch_eliq_data
     
-    # 1. Busca os dados via Mock (função no utils/data_processing.py)
     if product_name == 'Asto':
         df_raw = fetch_asto_data(start_date, end_date)
     elif product_name == 'Eliq':
@@ -342,10 +255,7 @@ def fetch_api_and_save(product_name: str, start_date: date, end_date: date):
         log_event("API_FETCH_EMPTY", f"API de {product_name} retornou dados vazios.")
         return pd.DataFrame()
         
-    # 2. Salva o resultado no Firestore
+    # Salva o resultado no Firestore
     success, message = save_data_to_firestore(product_name, df_raw, 'API')
-    
-    if not success:
-        st.warning(f"Aviso: Falha ao armazenar dados de {product_name} no Firestore. Usando dados voláteis.")
 
     return df_raw
