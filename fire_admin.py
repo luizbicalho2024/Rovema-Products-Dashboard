@@ -7,8 +7,6 @@ import pandas as pd
 from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp 
 from datetime import date
 import os
-# A lógica de 'fetch_api_and_save' foi movida para 'utils/data_processing.py'
-# para evitar dependências circulares e separar responsabilidades.
 
 # --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE (ROBUSTA) ---
 
@@ -28,7 +26,6 @@ def get_credentials_dict():
             key_content = key_content.strip().replace('\\n', '\n')
         sa_config['private_key'] = key_content
 
-    # FIX: Prioriza a leitura robusta da API Key
     api_key = st.secrets.get("FIREBASE_WEB_API_KEY", "")
     api_key = api_key.strip() if isinstance(api_key, str) else None
 
@@ -38,14 +35,23 @@ def get_credentials_dict():
 
     return sa_config, api_key
 
+# Obter credenciais globalmente
 CREDENTIALS_DICT, FIREBASE_WEB_API_KEY = get_credentials_dict()
 
-@st.cache_resource
 def initialize_firebase():
-    """Inicializa o Firebase Admin SDK e o Firestore."""
+    """
+    Inicializa o Firebase Admin SDK e o Firestore.
+    [ROBUSTO] Verifica se a conexão já existe no st.session_state
+    antes de criar uma nova.
+    """
     
+    # Se o DB já está inicializado no state, não faz nada.
+    if 'db' in st.session_state and st.session_state['db'] is not None:
+        return True
+
     if CREDENTIALS_DICT is None:
-        return None, None, None, None
+        st.error("Credenciais do Firebase (firebase_service_account) não encontradas no st.secrets.")
+        return False
 
     try:
         cred = credentials.Certificate(CREDENTIALS_DICT)
@@ -54,25 +60,29 @@ def initialize_firebase():
             firebase_admin.initialize_app(cred)
             
         db = firestore.client()
-        bucket = None 
         
+        # Salva os objetos de serviço no st.session_state
         st.session_state['db'] = db
-        st.session_state['bucket'] = bucket
+        st.session_state['auth_service'] = auth
+        st.session_state['bucket'] = None # Bucket não está sendo usado
+        st.session_state['project_id'] = CREDENTIALS_DICT.get('project_id')
         
-        return auth, db, bucket, CREDENTIALS_DICT.get('project_id')
+        return True
+        
     except Exception as e:
         print(f"Erro Crítico de Inicialização do Firebase: {e}")
-        st.error(f"Erro ao inicializar o Firebase: Falha na validação das credenciais.")
-        return None, None, None, None
-
-auth_service, db, bucket, project_id = initialize_firebase()
-
+        st.error(f"Erro ao inicializar o Firebase: Falha na validação das credenciais. Verifique o secrets.toml. Erro: {e}")
+        # Garante que o estado seja limpo se a inicialização falhar
+        st.session_state['db'] = None
+        st.session_state['auth_service'] = None
+        return False
 
 # --- 2. FUNÇÕES DE LOGS (Auditoria) ---
 
 def log_event(action: str, details: str = ""):
     """Registra um evento de log no Firestore."""
-    if st.session_state.get('db') is None:
+    db = st.session_state.get('db')
+    if db is None:
         return
     
     user_email = st.session_state.get('user_email', 'SISTEMA')
@@ -84,7 +94,7 @@ def log_event(action: str, details: str = ""):
         "details": details
     }
     try:
-        st.session_state['db'].collection('logs').add(log_entry)
+        db.collection('logs').add(log_entry)
     except Exception:
         st.toast(f"Não foi possível registrar o log.", icon="⚠️")
 
@@ -93,6 +103,10 @@ def log_event(action: str, details: str = ""):
 
 def login_user(email: str, password: str):
     """Autentica o usuário e recupera o papel (role) no Firestore."""
+    
+    # Puxa o DB do session_state
+    db = st.session_state.get('db')
+
     if not FIREBASE_WEB_API_KEY:
         log_event("LOGIN_ERROR", "Chave da API Web não configurada ou vazia nos secrets.")
         return False, "Erro de configuração: Chave da API Web não encontrada ou está vazia."
@@ -110,11 +124,16 @@ def login_user(email: str, password: str):
         if not user_uid:
             return False, "E-mail ou senha incorretos."
 
-        if st.session_state.get('db') is None:
-            log_event("LOGIN_ERROR", "Firestore indisponível devido a falha nas credenciais iniciais.")
-            return False, "Erro crítico de serviço: Contate o administrador."
+        # *** CORREÇÃO ***
+        # Esta é a verificação que estava falhando.
+        if db is None:
+            # Tenta reinicializar caso tenha falhado no boot
+            if not initialize_firebase():
+                log_event("LOGIN_ERROR", "Firestore indisponível devido a falha nas credenciais iniciais.")
+                return False, "Erro crítico de serviço: Contate o administrador."
+            db = st.session_state.get('db') # Tenta pegar novamente
 
-        user_doc = st.session_state['db'].collection('users').document(user_uid).get()
+        user_doc = db.collection('users').document(user_uid).get()
         if not user_doc.exists:
             log_event("LOGIN_FAIL", f"Usuário {email} autenticado, mas sem papel de acesso (UID: {user_uid}).")
             return False, "Usuário autenticado, mas sem papel de acesso definido. Contate o administrador."
@@ -148,23 +167,36 @@ def login_user(email: str, password: str):
 def logout_user():
     """Limpa o estado da sessão e desloga o usuário."""
     log_event("LOGOUT", "Usuário deslogou.")
+    
+    # Lista de chaves para preservar (como a conexão 'db')
+    keys_to_preserve = ['db', 'auth_service', 'bucket', 'project_id']
+    preserved_state = {k: st.session_state[k] for k in keys_to_preserve if k in st.session_state}
+    
+    # Limpa todo o session state
+    st.session_state.clear()
+    
+    # Restaura o estado da conexão
+    st.session_state.update(preserved_state)
+    
+    # Define o estado de logout
     st.session_state['authenticated'] = False
-    st.session_state['user_email'] = None
-    st.session_state['user_role'] = None
-    st.session_state['user_uid'] = None
+    
     st.rerun()
 
 # --- 4. FUNÇÕES DE GERENCIAMENTO DE ACESSOS (Admin) ---
 
 def create_user(email, password, role, name):
     """Cria um novo usuário no Firebase Auth e define o papel no Firestore."""
-    if st.session_state.get('db') is None or not auth_service:
+    db = st.session_state.get('db')
+    auth_service = st.session_state.get('auth_service')
+
+    if db is None or auth_service is None:
         return False, "Serviços Firebase indisponíveis. Contate o administrador."
     
     try:
         user = auth_service.create_user(email=email, password=password)
         
-        st.session_state['db'].collection('users').document(user.uid).set({
+        db.collection('users').document(user.uid).set({
             'email': email,
             'role': role,
             'nome': name
@@ -177,11 +209,12 @@ def create_user(email, password, role, name):
 
 def get_all_users():
     """Retorna a lista completa de usuários e seus papéis."""
-    if st.session_state.get('db') is None:
+    db = st.session_state.get('db')
+    if db is None:
         return []
     
     try:
-        users_ref = st.session_state['db'].collection('users')
+        users_ref = db.collection('users')
         docs = users_ref.stream()
         user_list = [doc.to_dict() | {'uid': doc.id} for doc in docs]
         return user_list
@@ -203,7 +236,8 @@ def get_all_consultores():
 
 def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type: str):
     """Salva o DataFrame processado (de API ou Upload) no Firestore."""
-    if st.session_state.get('db') is None:
+    db = st.session_state.get('db')
+    if db is None:
         return False, "Firestore não inicializado."
 
     data_records = df_data.to_dict('records')
@@ -216,37 +250,30 @@ def save_data_to_firestore(product_name: str, df_data: pd.DataFrame, source_type
     }
     
     try:
-        upload_doc_ref = st.session_state['db'].collection('data_metadata').add(upload_metadata)
+        upload_doc_ref = db.collection('data_metadata').add(upload_metadata)
         upload_id = upload_doc_ref[1].id if isinstance(upload_doc_ref, tuple) else upload_doc_ref.id
 
         collection_name = f"data_{product_name.lower().replace(' ', '_')}"
         
-        batch = st.session_state['db'].batch()
+        batch = db.batch()
         
         for i, record in enumerate(data_records):
             record['data_source_id'] = upload_id 
             record['ingestion_timestamp'] = server_timestamp
             
-            # **MELHORIA CRÍTICA:**
-            # Removemos a conversão para 'isoformat()'.
-            # O SDK do Firebase Admin (usado no servidor) converte automaticamente
-            # objetos pd.Timestamp (ou datetime) em Timestamps nativos do Firestore.
-            # Isso é essencial para que as consultas de data (.where()) funcionem.
-            
-            # Limpa NaNs ou NaTs que não são compatíveis com JSON/Firestore
             cleaned_record = {}
             for key, value in record.items():
                 if pd.isna(value):
-                    cleaned_record[key] = None  # Converte NaT/NaN para None
+                    cleaned_record[key] = None
                 else:
                     cleaned_record[key] = value
             
-            doc_ref = st.session_state['db'].collection(collection_name).document()
+            doc_ref = db.collection(collection_name).document()
             batch.set(doc_ref, cleaned_record)
             
             if (i + 1) % 499 == 0:
                 batch.commit()
-                batch = st.session_state['db'].batch() 
+                batch = db.batch() 
                 
         batch.commit()
         
