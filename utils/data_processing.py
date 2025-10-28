@@ -7,9 +7,10 @@ import altair as alt
 
 # Importa módulos Firebase
 try:
-    from fire_admin import log_event, db, server_timestamp
+    from fire_admin import log_event, db, server_timestamp, fetch_api_and_save
 except ImportError:
     def log_event(action: str, details: str = ""): pass
+    def fetch_api_and_save(product_name, start_date, end_date): return pd.DataFrame()
 
 
 # --- MOCKS de APIs (Retorna RAW data para cache) ---
@@ -26,7 +27,6 @@ def fetch_asto_data(start_date: date, end_date: date):
     df = pd.DataFrame(data)
     df['dataFimApuracao'] = pd.to_datetime(df['dataFimApuracao']).dt.normalize()
     df['Receita'] = df['valorBruto'] - df['valorLiquido']
-    # Retorna o RAW data para salvar no Firestore.
     return df
 
 def fetch_eliq_data(start_date: date, end_date: date):
@@ -40,16 +40,13 @@ def fetch_eliq_data(start_date: date, end_date: date):
     ]
     df = pd.DataFrame(data)
     df['data_cadastro'] = pd.to_datetime(df['data_cadastro']).dt.normalize()
-    
-    # Retorna o RAW data para salvar no Firestore.
     return df
 
 
-# --- Funções de Processamento e Agregação (Com Filtro de Data) ---
+# --- Funções de Processamento de Arquivos ---
 
 def process_uploaded_file(uploaded_file, product_name):
     """Processa o arquivo, faz a limpeza, padroniza nomes de coluna e retorna o DataFrame RAW."""
-    # ... (Corpo da função process_uploaded_file mantido) ...
     try:
         is_csv = uploaded_file.name.lower().endswith('.csv')
         uploaded_file.seek(0)
@@ -145,15 +142,14 @@ def process_rovemapay_data(df):
 def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
     """
     Busca todos os dados RAW da coleção do Firestore, FILTRA por data e AGGREGA.
-    Esta função agora carrega DADOS DA API TAMBÉM (se o TTL tiver expirado).
     """
     if st.session_state.get('db') is None: return pd.DataFrame()
-    collection_name = f"data_{product_name.lower()}"
+    collection_name = f"data_{product_name.lower().replace(' ', '_')}"
     
     # 1. Se for Asto ou Eliq, dispara o salvamento/cache
     if product_name in ['Asto', 'Eliq']:
-        from fire_admin import fetch_api_and_save
-        fetch_api_and_save(product_name, start_date, end_date) # Dispara a função de cache/salvamento
+        # Esta função irá chamar a API, salvar no Firestore (cache) e retornar o RAW data
+        fetch_api_and_save(product_name, start_date, end_date)
     
     # 2. Busca RAW DATA DO FIRESTORE (agora inclui os dados cacheados da API)
     try:
@@ -217,7 +213,7 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
             DATA_COL = 'dataFimApuracao'
             if DATA_COL not in df.columns: return pd.DataFrame()
                 
-            df[DATA_COL] = pd.to_datetime(df[DATA_COL]).dt.normalize()
+            df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
             df = df.dropna(subset=[DATA_COL])
             
             # FILTRO DE DATA RAW
@@ -236,7 +232,7 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
             DATA_COL = 'data_cadastro'
             if DATA_COL not in df.columns: return pd.DataFrame()
                 
-            df[DATA_COL] = pd.to_datetime(df[DATA_COL]).dt.normalize()
+            df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
             df = df.dropna(subset=[DATA_COL])
 
             # FILTRO DE DATA RAW
