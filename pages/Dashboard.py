@@ -7,6 +7,8 @@ from utils.data_processing import fetch_asto_data, fetch_eliq_data, get_latest_u
 
 # --- Funções Auxiliares de Visualização (Mapeando o PDF) ---
 
+# ... (Mantenha as funções get_dashboard_metrics e get_ranking_data IGUAIS) ...
+
 def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
     """Calcula as métricas principais para o header."""
     
@@ -24,7 +26,6 @@ def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
 def get_ranking_data(rovemapay_df):
     """Simula a geração dos rankings de crescimento/queda e participação por bandeira."""
         
-    # --- Top 10 Queda (Hardcoded para replicar o layout do PDF) ---
     ranking_queda_data = {
         'Cliente': ['Posto Avenida', 'Concessionária RodarMais', 'Restaurante Dom Pepe', 'Loja Universo Tech', 'Farmácia Popular', 'Posto Panorama', 'Oficina Auto Luz', 'Loja Bella Casa', 'Auto Mecânica Pereira', 'Livraria Estilo'],
         'CNPJ': ['85.789.123/0001-45', '18.456.789/0001-75', '86.456.789/0001-55', '87.987.654/0001-65', '19.567.890/0001-85', '20.678.901/0001-95', '88.234.567/0001-75', '21.789.012/0001-05', '89.567.890/0001-85', '90.678.901/0001-95'],
@@ -32,7 +33,6 @@ def get_ranking_data(rovemapay_df):
     }
     ranking_queda_df = pd.DataFrame(ranking_queda_data)
     
-    # --- Detalhamento por Cliente (Hardcoded para replicar o layout do PDF) ---
     detalhamento_data = {
         'CNPJ': ['94.012.345/0001-35', '95.123.456/0001-45', '12.345.678/0001-10', '45.123.678/0001-80', '96.234.567/0001-55', '56.789.123/0001-30', '23.456.789/0001-20', '97.345.678/0001-65', '31.234.567/0001-50', '98.456.789/0001-75'],
         'Cliente': ['Posto Sol Nascente', 'Supermercado Real', 'Auto Peças Silva', 'Concessionária Fenix', 'Papelaria Central', 'Padaria Doce Sabor', 'Supermercado Oliveira', 'Auto Mecânica Lima', 'Posto Vitória', 'Oficina do Tonho'],
@@ -43,7 +43,6 @@ def get_ranking_data(rovemapay_df):
     }
     detalhamento_df = pd.DataFrame(detalhamento_data)
     
-    # --- Participação por Bandeira (Mapeando do Detalhamento) ---
     bandeira_df = detalhamento_df.groupby('Bandeira')['Nº Vendas'].sum().reset_index()
     bandeira_df = bandeira_df.rename(columns={'Nº Vendas': 'Valor'})
 
@@ -58,6 +57,7 @@ def dashboard_page():
         return
 
     st.title("ROVEMA BANK: Dashboard de Transações")
+    st.caption("Filtros Ativos na Barra Lateral")
     log_event("VIEW_DASHBOARD", "Visualizando o dashboard principal.")
     
     # --- 0. FILTROS NA BARRA LATERAL (Sidebar) ---
@@ -99,7 +99,6 @@ def dashboard_page():
     
     st.sidebar.markdown("---")
     
-    # Botão Atualizar
     if st.sidebar.button("Atualizar"):
         st.session_state['update_counter'] += 1
         st.toast("Dashboard atualizado!")
@@ -111,12 +110,14 @@ def dashboard_page():
     def load_data(start_date, end_date, update_counter):
         """Carrega todos os dados, garantindo que o cache seja invalidado pelo botão Atualizar."""
         return (
-            fetch_asto_data(start_date.isoformat(), end_date.isoformat()),
-            fetch_eliq_data(start_date.isoformat(), end_date.isoformat()),
-            get_latest_uploaded_data('Bionio'),
-            get_latest_uploaded_data('RovemaPay')
+            # PASSANDO AS DATAS PARA AS FUNÇÕES DE DADOS AGORA AS FILTRAR DE FORMA INTERNA
+            fetch_asto_data(start_date, end_date),
+            fetch_eliq_data(start_date, end_date),
+            get_latest_uploaded_data('Bionio', start_date, end_date),
+            get_latest_uploaded_data('RovemaPay', start_date, end_date)
         )
 
+    # Carrega dados
     asto_df, eliq_df, bionio_df_db, rovemapay_df_db = load_data(start_date, end_date, st.session_state['update_counter'])
     
     
@@ -179,15 +180,15 @@ def dashboard_page():
     with col_g1:
         st.header("Evolução do Valor Transacionado vs Receita")
         
-        # O gráfico de evolução deve ser baseado nos produtos selecionados. 
+        # Filtro de Evolução
         if ("Rovema Pay" in selected_products and not rovemapay_df_db.empty) or ("Asto" in selected_products and not asto_df.empty):
             
             # Combina Rovema e Asto para a evolução
             rovema_long = rovemapay_df_db.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
             
-            # Adiciona Asto
+            # Adiciona Asto (adaptando a coluna de data)
             asto_temp = asto_df.rename(columns={'dataFimApuracao': 'Mês', 'valorBruto': 'Liquido', 'Receita': 'Receita'}).copy()
-            asto_temp['Mês'] = asto_df['dataFimApuracao'].dt.to_period('M').astype(str)
+            asto_temp['Mês'] = asto_df['Mês']
             asto_long = asto_temp.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
             
             final_evolucao_df = pd.concat([rovema_long, asto_long]).groupby(['Mês', 'Métrica'])['Valor'].sum().reset_index()
