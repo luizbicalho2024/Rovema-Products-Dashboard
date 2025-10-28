@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from fire_admin import initialize_firebase, login_user, logout_user, log_event, auth_service
+from fire_admin import initialize_firebase, login_user, logout_user, log_event
 
 # Define a configuração da página
 st.set_page_config(
@@ -11,7 +11,9 @@ st.set_page_config(
 )
 
 # 1. Inicializa o Firebase e configura o estado da sessão
-auth_service, db, bucket, project_id = initialize_firebase()
+# [ROBUSTO] A função agora garante que o st.session_state['db'] etc.
+# sejam definidos, se ainda não estiverem.
+initialization_success = initialize_firebase()
 
 # Inicializa o estado de autenticação
 if 'authenticated' not in st.session_state:
@@ -51,8 +53,15 @@ if not st.session_state['authenticated']:
             """
         )
         # Aviso para o primeiro setup
-        if auth_service and not db.collection('users').limit(1).get():
-             st.warning("⚠️ **Alerta de Setup:** Crie seu primeiro usuário 'Admin' manualmente no Console do Firebase (Authentication e Firestore).")
+        # [ROBUSTO] Puxa os serviços do state para fazer a verificação
+        if initialization_success:
+            auth_service = st.session_state.get('auth_service')
+            db = st.session_state.get('db')
+            
+            if auth_service and db and not db.collection('users').limit(1).get():
+                st.warning("⚠️ **Alerta de Setup:** Crie seu primeiro usuário 'Admin' manualmente no Console do Firebase (Authentication e Firestore).")
+        else:
+            st.error("Falha na conexão com o Firebase. Verifique os logs e o arquivo secrets.toml.")
              
 # --- Dashboard Principal (Após Login) ---
 else:
