@@ -302,3 +302,40 @@ def get_latest_aggregated_data(product_name: str, start_date: date, end_date: da
     except Exception as e:
         log_event("DATA_AGGREGATION_FAIL", f"Falha ao agregar dados de {product_name}: {e}")
         return pd.DataFrame()
+
+# Adicione esta função ao final do seu arquivo utils/data_processing.py
+
+@st.cache_data(ttl=3600, show_spinner="Buscando lista de clientes...")
+def get_unique_clients_from_raw_data():
+    """
+    [NOVO] Busca todos os clientes (empresas) únicos nos dados brutos
+    para vincular aos consultores.
+    """
+    # Define um período de tempo longo para buscar todos os clientes
+    # Em um app real, isso poderia ser uma coleção 'empresas' separada.
+    start_date = date(2020, 1, 1)
+    end_date = date(2099, 12, 31)
+    
+    clients = set()
+
+    # 1. Busca clientes do Rovema Pay
+    df_rovemapay_raw = get_raw_data_from_firestore('Rovema Pay', start_date, end_date)
+    if not df_rovemapay_raw.empty:
+        # Tenta usar 'cnpj' primeiro, se não, 'cliente'
+        if 'cnpj' in df_rovemapay_raw.columns:
+            clients.update(df_rovemapay_raw['cnpj'].dropna().unique())
+        elif 'cliente' in df_rovemapay_raw.columns:
+            clients.update(df_rovemapay_raw['cliente'].dropna().unique())
+            
+    # 2. Busca clientes do Bionio
+    df_bionio_raw = get_raw_data_from_firestore('Bionio', start_date, end_date)
+    if not df_bionio_raw.empty:
+        # (Assumindo que Bionio também tenha uma coluna 'cliente' ou 'cnpj')
+        if 'cnpj' in df_bionio_raw.columns:
+            clients.update(df_bionio_raw['cnpj'].dropna().unique())
+        elif 'cliente' in df_bionio_raw.columns:
+             clients.update(df_bionio_raw['cliente'].dropna().unique())
+             
+    # Adicione aqui lógicas para 'Asto' e 'Eliq' se eles também tiverem clientes
+    
+    return sorted(list(clients))
