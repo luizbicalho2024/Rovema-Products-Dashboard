@@ -15,15 +15,13 @@ def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
     bionio_value = bionio_df['Valor Total Pedidos'].sum() if not bionio_df.empty else 0
     asto_revenue = asto_df['Receita'].sum() if not asto_df.empty else 0
     
-    total_revenue_sim = rovema_revenue + bionio_value + asto_revenue # Usamos uma métrica simulada consistente
+    total_revenue_sim = 2_146_293.35 # Valor simulado do PDF
+    nossa_receita = rovema_revenue + asto_revenue # Receita da empresa (margem dos serviços)
     
     # Margem Média: Custo Total Percentual
     margem_media = rovemapay_df['Taxa_Media'].mean() if not rovemapay_df.empty else 0.0
     
-    # O valor transacionado total (R$ 2.146.293,35) e a variação são simulados
-    valor_transacionado_sim = 2_146_293.35 
-    
-    return valor_transacionado_sim, rovema_revenue, margem_media
+    return total_revenue_sim, nossa_receita, margem_media
 
 def get_ranking_data(rovemapay_df):
     """Simula a geração dos rankings de crescimento/queda e participação por bandeira."""
@@ -62,95 +60,113 @@ def dashboard_page():
         return
 
     st.title("ROVEMA BANK: Dashboard de Transações")
+    st.caption("Powered by KR8")
     log_event("VIEW_DASHBOARD", "Visualizando o dashboard principal.")
     
-    # --- 1. FILTROS E MÉTRICAS DO HEADER ---
+    # --- 0. FILTROS NA BARRA LATERAL (Sidebar) ---
     
+    # Simula o clique do botão "Atualizar" para recarregar todos os dados
+    if 'update_counter' not in st.session_state:
+        st.session_state['update_counter'] = 0
+
+    st.sidebar.title("Filtros")
+    
+    # Filtros de Data (Top-of-page no PDF)
     default_end_date = date(2025, 10, 31)
     default_start_date = default_end_date - timedelta(days=90)
     
-    col_filter1, col_filter2, col_filter3 = st.columns([1, 1, 1])
+    start_date = st.sidebar.date_input("Data início", default_start_date)
+    end_date = st.sidebar.date_input("Data fim", default_end_date)
     
-    with col_filter1:
-        st.date_input("Data Início", default_start_date)
-    with col_filter2:
-        st.date_input("Data Fim", default_end_date)
-    with col_filter3:
-        st.selectbox("Carteira", ["Todas"], disabled=True)
+    # Filtros de Contexto (Replicando o "Todas/Todos" do PDF)
+    st.sidebar.selectbox("Bandeira", ["Todas", "Pix", "Débito", "Crédito"])
+    st.sidebar.selectbox("Adquirente", ["Todos", "Getnet", "Cielo", "Stone"])
+    st.sidebar.selectbox("EC/Cliente", ["Todas", "Posto Sol Nascente", "Supermercado Real"])
     
-    # Busca dados (simulados e reais)
-    asto_df = fetch_asto_data(default_start_date.isoformat(), default_end_date.isoformat())
-    eliq_df = fetch_eliq_data(default_start_date.isoformat(), default_end_date.isoformat())
-    bionio_df_db = get_latest_uploaded_data('Bionio')
-    rovemapay_df_db = get_latest_uploaded_data('RovemaPay')
+    # Botão Atualizar
+    if st.sidebar.button("Atualizar"):
+        st.session_state['update_counter'] += 1
+        st.toast("Dashboard atualizado com novos filtros!")
+        # Força o rerender para aplicar os filtros (mesmo que mock)
+        st.rerun() 
     
-    # Calcula métricas
+    st.sidebar.markdown("---")
+    
+    # Forçar a reexecução do cache (usando o counter para simular a aplicação do filtro)
+    @st.cache_data(ttl=60, show_spinner=False)
+    def load_data(start_date, end_date, update_counter):
+        """Carrega todos os dados, garantindo que o cache seja invalidado pelo botão Atualizar."""
+        return (
+            fetch_asto_data(start_date.isoformat(), end_date.isoformat()),
+            fetch_eliq_data(start_date.isoformat(), end_date.isoformat()),
+            get_latest_uploaded_data('Bionio'),
+            get_latest_uploaded_data('RovemaPay')
+        )
+
+    asto_df, eliq_df, bionio_df_db, rovemapay_df_db = load_data(start_date, end_date, st.session_state['update_counter'])
+    
+    
+    # --- 1. MÉTRICAS DO HEADER ---
+    
     valor_transacionado_sim, nossa_receita, margem_media = get_dashboard_metrics(rovemapay_df_db, bionio_df_db, asto_df, eliq_df)
-    
-    st.markdown("---")
     
     col_m1, col_m2, col_m3, col_m4, col_m5, col_m6 = st.columns(6)
     
     col_m1.metric("Transacionado (Bruto)", f"R$ {valor_transacionado_sim:,.2f}", delta="+142.49% vs. trimestre anterior")
     col_m2.metric("Nossa Receita", f"R$ {nossa_receita:,.2f}")
     col_m3.metric("Margem Média", f"{margem_media:.2f}%")
-    col_m4.metric("Clientes Ativos", "99")
-    col_m5.metric("Clientes em Queda", "16")
+    col_m4.metric("Clientes Ativos", "99") # Simulado
+    col_m5.metric("Clientes em Queda", "16") # Simulado
     
     st.markdown("---")
 
 
     # --- BLOCO 2: EVOLUÇÃO E PARTICIPAÇÃO (Gráficos) ---
     
-    st.header("Evolução do Valor Transacionado vs Receita")
+    col_g1, col_g2 = st.columns([2, 1])
     
-    # Gráfico de Evolução (Usando o Rovema Pay como base principal)
-    if not rovemapay_df_db.empty:
-        # Cria um DataFrame Longo para o gráfico de linha (Receita vs Liquido)
-        rovema_long = rovemapay_df_db.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
-        
-        evolucao_chart = alt.Chart(rovema_long).mark_line(point=True).encode(
-            x=alt.X('Mês:O', title=''),
-            y=alt.Y('Valor', title='Valor (R$)'),
-            color='Métrica',
-            tooltip=['Mês', alt.Tooltip('Valor', format='$,.2f'), 'Métrica']
-        ).properties(title='Evolução da Receita e Volume Rovema Pay').interactive()
-        
-        st.altair_chart(evolucao_chart, use_container_width=True)
-    else:
-        st.info("Dados de Rovema Pay insuficientes para o gráfico de evolução.")
-
-    col_g1, col_g2 = st.columns(2)
-
-    # G1: Participação por Bandeira (Baseado no Mock/Detalhamento do PDF)
-    ranking_queda_df, detalhamento_df, bandeira_df = get_ranking_data(rovemapay_df_db)
-    
+    # G1: Evolução do Valor Transacionado vs Receita
     with col_g1:
+        st.header("Evolução do Valor Transacionado vs Receita")
+        if not rovemapay_df_db.empty:
+            rovema_long = rovemapay_df_db.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
+            
+            evolucao_chart = alt.Chart(rovema_long).mark_line(point=True).encode(
+                x=alt.X('Mês:O', title=''),
+                y=alt.Y('Valor', title='Valor (R$)'),
+                color='Métrica',
+                tooltip=['Mês', alt.Tooltip('Valor', format='$,.2f'), 'Métrica']
+            ).properties(title='Evolução da Receita e Volume Rovema Pay').interactive()
+            
+            st.altair_chart(evolucao_chart, use_container_width=True)
+        else:
+            st.info("Dados de Rovema Pay insuficientes para o gráfico de evolução.")
+
+    # G2: Participação por Bandeira e Receita por Carteira
+    with col_g2:
         st.subheader("Participação por Bandeira")
-        if not bandeira_df.empty:
-            bandeira_chart = alt.Chart(bandeira_df).mark_arc(outerRadius=120).encode(
+        
+        ranking_queda_df, detalhamento_df, bandeira_df = get_ranking_data(rovemapay_df_db)
+        
+        if not bandeira_df.empty and bandeira_df['Valor'].sum() > 0:
+            bandeira_chart = alt.Chart(bandeira_df).mark_arc(outerRadius=80).encode(
                 theta=alt.Theta(field="Valor", type="quantitative"),
                 color=alt.Color(field="Bandeira", type="nominal"),
                 order=alt.Order("Valor", sort="descending"),
-                tooltip=["Bandeira", "Valor"]
+                tooltip=["Bandeira", alt.Tooltip("Valor", format=",")]
             ).properties(title="")
             st.altair_chart(bandeira_chart, use_container_width=True)
         else:
             st.warning("Dados de Bandeira insuficientes.")
-
-    # G2: Receita por Carteira (Mapeando os 4 produtos)
-    with col_g2:
+            
         st.subheader("Receita por Carteira")
         
         carteira_data = {
             'Carteira': ['RovemaPay', 'Bionio', 'Asto (Simulado)', 'Eliq (Simulado)'],
-            'Receita Total': [rovemapay_df_db['Receita'].sum() if not rovemapay_df_db.empty else 0, 
-                              bionio_df_db['Valor Total Pedidos'].sum() if not bionio_df_db.empty else 0, 
-                              asto_df['Receita'].sum(), 
-                              eliq_df['valor_total'].sum() * 0.05]
+            'Receita Total': [nossa_receita, bionio_df_db['Valor Total Pedidos'].sum() if not bionio_df_db.empty else 0, asto_df['Receita'].sum(), eliq_df['valor_total'].sum() * 0.05]
         }
         carteira_df = pd.DataFrame(carteira_data)
-        
+
         if not carteira_df.empty and carteira_df['Receita Total'].sum() > 0:
             carteira_chart = alt.Chart(carteira_df).mark_bar().encode(
                 x=alt.X("Carteira:N", title=""),
@@ -161,22 +177,20 @@ def dashboard_page():
         else:
             st.warning("Dados insuficientes para Receita por Carteira.")
 
-
     st.markdown("---")
 
     # --- BLOCO 3: RANKINGS E DETALHAMENTO ---
     
     col_r1, col_r2 = st.columns(2)
 
-    # R1: TOP 10 QUEDA (Replicando o formato do PDF)
+    # R1: TOP 10 QUEDA
     with col_r1:
         st.subheader("Top 10 Queda")
         st.dataframe(ranking_queda_df[['Cliente', 'CNPJ', 'Variação']].rename(columns={'Variação': 'Variação %'}), hide_index=True, use_container_width=True)
 
-    # R2: TOP 10 CRESCIMENTO (Replicando o formato do PDF)
+    # R2: TOP 10 CRESCIMENTO
     with col_r2:
         st.subheader("Top 10 Crescimento")
-        # Criamos um ranking de crescimento simulado para preencher o espaço
         ranking_crescimento_data = {
             'Cliente': ['Posto Sol Nascente', 'Supermercado Real', 'Auto Peças Silva', 'Concessionária Fenix'],
             'Variação %': [10.4, 21.7, 7.9, -6.6]
@@ -197,8 +211,8 @@ def dashboard_page():
         st.subheader("Clientes e Crescimento")
         st.dataframe(detalhamento_df.rename(columns={'Crescimento': 'Crescimento %'}), hide_index=True, use_container_width=True)
         st.markdown("Mostrando 1 a 10 de 99 clientes | [Anterior] [Próxima]")
-        st.button("Exportar CSV")
-
+        st.button("Exportar CSV") # O botão está agora dentro da coluna
+        
     # D2: Insights
     with col_d2:
         st.subheader("Insights Automáticos")
