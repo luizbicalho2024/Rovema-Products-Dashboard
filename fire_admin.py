@@ -4,35 +4,45 @@ from firebase_admin import credentials, auth, firestore
 import json
 import requests
 import pandas as pd
+# Importa server_timestamp do módulo correto para evitar NameError
 from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp 
 
 # --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE (ROBUSTA) ---
 
-@st.cache_resource
 def get_credentials_dict():
-    """Lê todas as credenciais do st.secrets e garante a limpeza."""
+    """Lê todas as credenciais do st.secrets, faz uma cópia mutável e garante a limpeza."""
     
-    # 1. Carrega o Service Account como dicionário
-    sa_config = st.secrets.get("firebase_service_account")
-    if not sa_config:
-        st.error("ERRO CRÍTICO: O bloco [firebase_service_account] não foi encontrado nos Secrets.")
+    # 1. Carrega o Service Account (READ-ONLY)
+    sa_config_readonly = st.secrets.get("firebase_service_account")
+    
+    if not sa_config_readonly:
+        # Se falhar a leitura do bloco principal
         return None, None
         
-    # 2. Carrega a Chave da API Web de forma defensiva
+    # CRITICAL FIX: Cria uma cópia mutável do dicionário para modificação
+    sa_config = dict(sa_config_readonly)
+        
+    # 2. Carrega a Chave da API Web
     api_key = st.secrets.get("FIREBASE_WEB_API_KEY")
     if api_key is None:
-        # Tenta a leitura da chave aninhada como último recurso (Embora não seja a prática ideal)
+        # Tenta a leitura da chave aninhada como último recurso
         api_key = sa_config.get("FIREBASE_WEB_API_KEY", "")
         
-    # 3. Limpeza Final da Private Key (Removendo espaços e tratando o formato)
+    # 3. Limpeza Final da Private Key (Resolvendo "Invalid Private Key")
     if 'private_key' in sa_config:
-        # Tenta remover espaços indesejados, o que resolve 99% dos erros de 'Invalid private key'
-        sa_config['private_key'] = sa_config['private_key'].strip()
+        key_content = sa_config['private_key']
+        # Remove espaços indesejados e trata as quebras de linha ('\n')
+        key_content = key_content.strip().replace('\\n', '\n')
+        # Atribuição segura ao dicionário mutável
+        sa_config['private_key'] = key_content 
         
     # Limpa a chave da API Web
     api_key = api_key.strip() if isinstance(api_key, str) else None
 
     return sa_config, api_key
+
+# As funções inicializadoras não podem ter o cache_resource na mesma linha da chamada.
+# Elas são inicializadas imediatamente.
 
 CREDENTIALS_DICT, FIREBASE_WEB_API_KEY = get_credentials_dict()
 
@@ -44,7 +54,7 @@ def initialize_firebase():
         return None, None, None, None
 
     try:
-        # Usa o dicionário carregado (limpo) para criar o objeto de credenciais
+        # Usa o dicionário CLONE e LIMPO
         cred = credentials.Certificate(CREDENTIALS_DICT)
 
         if not firebase_admin._apps:
@@ -58,7 +68,7 @@ def initialize_firebase():
         
         return auth, db, bucket, CREDENTIALS_DICT.get('project_id')
     except Exception as e:
-        # Esta mensagem será exibida se a Private Key for inválida
+        # Imprime o erro no Streamlit Cloud Logs (console)
         print(f"Erro Crítico de Inicialização do Firebase: {e}")
         st.error(f"Erro ao inicializar o Firebase: Falha na validação das credenciais.")
         return None, None, None, None
@@ -96,7 +106,6 @@ def login_user(email: str, password: str):
     """
     if not FIREBASE_WEB_API_KEY:
         log_event("LOGIN_ERROR", "Chave da API Web não configurada ou vazia nos secrets.")
-        # Se falhou aqui, o Service Account (DB) provavelmente falhou também
         return False, "Erro de configuração: Chave da API Web não encontrada ou está vazia."
         
     API_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
@@ -119,7 +128,8 @@ def login_user(email: str, password: str):
             return False, "E-mail ou senha incorretos."
 
         if st.session_state.get('db') is None:
-            return False, "Erro crítico de serviço: Contate o administrador. (DB não inicializado)"
+            log_event("LOGIN_ERROR", "Firestore indisponível devido a falha nas credenciais iniciais.")
+            return False, "Erro crítico de serviço: Contate o administrador."
 
         user_doc = st.session_state['db'].collection('users').document(user_uid).get()
         if not user_doc.exists:
