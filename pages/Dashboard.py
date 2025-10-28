@@ -11,7 +11,7 @@ from utils.data_processing import get_latest_aggregated_data, get_raw_data_from_
 def get_ranking_data():
     """Simula a geração dos rankings de crescimento/queda e participação por bandeira, conforme o PDF."""
     
-    # [cite: 30, 31, 35, 39, 41, 43, 46, 48, 51, 55, 57]
+    #
     ranking_queda_data = {
         'Cliente': ['Posto Avenida', 'Concessionária RodarMais', 'Restaurante Dom Pepe', 'Loja Universo Tech', 'Farmácia Popular', 'Posto Panorama', 'Oficina Auto Luz', 'Loja Bella Casa', 'Auto Mecânica Pereira', 'Livraria Estilo'],
         'CNPJ': ['85.789.123/0001-45', '18.456.789/0001-75', '86.456.789/0001-55', '87.987.654/0001-65', '19.567.890/0001-85', '20.678.901/0001-95', '88.234.567/0001-75', '21.789.012/0001-05', '89.567.890/0001-85', '90.678.901/0001-95'],
@@ -19,7 +19,7 @@ def get_ranking_data():
     }
     ranking_queda_df = pd.DataFrame(ranking_queda_data)
     
-    # 
+    #
     detalhamento_data = {
         'CNPJ': ['94.012.345/0001-35', '95.123.456/0001-45', '12.345.678/0001-10', '45.123.678/0001-80', '96.234.567/0001-55', '56.789.123/0001-30', '23.456.789/0001-20', '97.345.678/0001-65', '31.234.567/0001-50', '98.456.789/0001-75'],
         'Cliente': ['Posto Sol Nascente', 'Supermercado Real', 'Auto Peças Silva', 'Concessionária Fenix', 'Papelaria Central', 'Padaria Doce Sabor', 'Supermercado Oliveira', 'Auto Mecânica Lima', 'Posto Vitória', 'Oficina do Tonho'],
@@ -30,7 +30,7 @@ def get_ranking_data():
     }
     detalhamento_df = pd.DataFrame(detalhamento_data)
     
-    # [cite: 27]
+    #
     bandeira_df = detalhamento_df.groupby('Bandeira')['Nº Vendas'].sum().reset_index()
     bandeira_df = bandeira_df.rename(columns={'Nº Vendas': 'Valor'})
 
@@ -69,8 +69,9 @@ def dashboard_page():
     
     if 'update_counter' not in st.session_state:
         st.session_state['update_counter'] = 0
-
-    st.sidebar.title("Filtros") [cite: 6]
+    
+    # [cite_start]Esta é a linha corrigida (sem o [cite: 6])
+    st.sidebar.title("Filtros") 
     
     # Filtros de Data
     default_end_date = date(2025, 10, 31)
@@ -155,7 +156,7 @@ def dashboard_page():
     # Métrica do Header
     nossa_receita = current_rovema_revenue + current_asto_revenue
     
-    # Usa o valor estático do PDF [cite: 10] como fallback se o dinâmico for zero
+    # Usa o valor estático do PDF como fallback se o dinâmico for zero
     valor_transacionado_display = current_valor_transacionado if current_valor_transacionado > 0 else 2_146_293.35
     
     
@@ -163,11 +164,11 @@ def dashboard_page():
     
     col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
     
-    col_m1.metric("Transacionado (Bruto)", f"R$ {valor_transacionado_display:,.2f}", delta="+142.49% vs. trimestre anterior") [cite: 10]
-    col_m2.metric("Nossa Receita", f"R$ {nossa_receita:,.2f}") # Dinâmico (PDF mostra 0,00) [cite: 16]
-    col_m3.metric("Margem Média", f"{current_margem_media:.2f}%") # Dinâmico (PDF mostra 0.00%) [cite: 17]
-    col_m4.metric("Clientes Ativos", "99") [cite: 18]
-    col_m5.metric("Clientes em Queda", "16") [cite: 19]
+    col_m1.metric("Transacionado (Bruto)", f"R$ {valor_transacionado_display:,.2f}", delta="+142.49% vs. trimestre anterior")
+    col_m2.metric("Nossa Receita", f"R$ {nossa_receita:,.2f}") # Dinâmico (PDF mostra 0,00)
+    col_m3.metric("Margem Média", f"{current_margem_media:.2f}%") # Dinâmico (PDF mostra 0.00%)
+    col_m4.metric("Clientes Ativos", "99")
+    col_m5.metric("Clientes em Queda", "16")
     
     st.markdown("---")
 
@@ -176,7 +177,7 @@ def dashboard_page():
     
     col_g1, col_g2 = st.columns([2, 1])
     
-    # G1: Evolução do Valor Transacionado vs Receita [cite: 20]
+    # G1: Evolução do Valor Transacionado vs Receita
     with col_g1:
         st.header("Evolução do Valor Transacionado vs Receita")
         
@@ -213,7 +214,7 @@ def dashboard_page():
 
     # G2: Participação por Bandeira e Receita por Carteira
     with col_g2:
-        # Participação por Bandeira (Estático do PDF) [cite: 23, 27]
+        # Participação por Bandeira (Estático do PDF)
         st.subheader("Participação por Bandeira")
         if not bandeira_df.empty and ("Rovema Pay" in selected_products):
             bandeira_chart = alt.Chart(bandeira_df).mark_arc(outerRadius=80).encode(
@@ -226,7 +227,7 @@ def dashboard_page():
         else:
             st.warning("Selecione 'Rovema Pay' para ver a participação por bandeira.")
             
-        # Receita por Carteira (Dinâmico) [cite: 22]
+        # Receita por Carteira (Dinâmico)
         st.subheader("Receita por Carteira")
         carteira_data = {
             'Carteira': [],
@@ -265,15 +266,15 @@ def dashboard_page():
     
     col_r1, col_r2 = st.columns(2)
 
-    # R1: TOP 10 QUEDA (Estático do PDF) [cite: 30]
+    # R1: TOP 10 QUEDA (Estático do PDF)
     with col_r1:
         st.subheader("Top 10 Queda")
         st.dataframe(ranking_queda_df[['Cliente', 'CNPJ', 'Variação']].rename(columns={'Variação': 'Variação %'}), hide_index=True, use_container_width=True)
 
-    # R2: TOP 10 CRESCIMENTO (Estático do PDF) [cite: 28]
+    # R2: TOP 10 CRESCIMENTO (Estático do PDF)
     with col_r2:
         st.subheader("Top 10 Crescimento")
-        # Pega os dados de crescimento da tabela de detalhamento (conforme PDF) 
+        # Pega os dados de crescimento da tabela de detalhamento (conforme PDF)
         ranking_crescimento = detalhamento_df[['Cliente', 'Crescimento']].sort_values(by='Crescimento', ascending=False).head(10)
         st.dataframe(ranking_crescimento.rename(columns={'Crescimento': 'Variação %'}), hide_index=True, use_container_width=True)
 
@@ -285,7 +286,7 @@ def dashboard_page():
     
     col_d1, col_d2 = st.columns([2, 1])
     
-    # D1: Tabela de Detalhamento (Estático do PDF) 
+    # D1: Tabela de Detalhamento (Estático do PDF)
     with col_d1:
         st.subheader("Clientes e Crescimento")
         st.dataframe(detalhamento_df.rename(columns={'Crescimento': 'Crescimento %'}), hide_index=True, use_container_width=True)
@@ -304,12 +305,12 @@ def dashboard_page():
             mime="text/csv",
         )
         
-    # D2: Insights (Estático do PDF) 
+    # D2: Insights (Estático do PDF)
     with col_d2:
         st.subheader("Insights Automáticos")
-        st.success("✅ Destaque do Trimestre: Posto Sol Nascente cresceu 34% com forte aumento em transações Pix.") [cite: 60]
-        st.info("💡 Oportunidade: 5 clientes estão próximos de atingir novo patamar de faturamento. Considere campanhas de incentivo.") [cite: 61, 62]
-        st.warning("⚠️ Atenção Necessária: Bar do João apresenta queda de 18%. Recomenda-se contato da equipe comercial.") [cite: 63]
+        st.success("✅ Destaque do Trimestre: Posto Sol Nascente cresceu 34% com forte aumento em transações Pix.")
+        st.info("💡 Oportunidade: 5 clientes estão próximos de atingir novo patamar de faturamento. Considere campanhas de incentivo.")
+        st.warning("⚠️ Atenção Necessária: Bar do João apresenta queda de 18%. Recomenda-se contato da equipe comercial.")
 
 
 # Garante que a função da página é chamada
