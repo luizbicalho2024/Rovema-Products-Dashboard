@@ -111,5 +111,11 @@ def consultant_management_page():
                     st.error(message)
                     log_event("CONSULTANT_UPDATE_FAIL", f"Falha ao atualizar {selected_uid}. Erro: {message}")
 
+# --- INÍCIO DA CORREÇÃO (CÓDIGO FALTANTE) ---
+
 # Garante que a função da página é chamada
-if st.session_state.get('authenticated
+if st.session_state.get('authenticated'):
+    consultant_management_page()
+else:
+    pass
+# --- FIM DA CORREÇÃO ---
