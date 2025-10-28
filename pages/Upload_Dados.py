@@ -26,27 +26,29 @@ def upload_data_page():
         
         if st.button(f"Processar e Salvar no Firestore"):
             if uploaded_file is not None:
+                
                 # 1. Processamento e Validação
                 with st.spinner(f"Validando e processando arquivo de {product}..."):
                     success_proc, message_proc, df_preview = process_uploaded_file(uploaded_file, product)
-                    df_to_save = df_preview.copy()
-                    
-                if not success_proc:
+                
+                # FIX: Verifica a falha imediatamente ANTES de tentar copiar/usar o DataFrame
+                if not success_proc or df_preview is None:
                     st.error(f"Falha no processamento: {message_proc}")
                     return
 
+                # Se chegou aqui, o processamento foi um sucesso e df_preview é um DataFrame
+                df_to_save = df_preview.copy() 
+                
                 if df_to_save.empty:
                     st.warning("O arquivo foi processado, mas não contém dados válidos após a limpeza.")
                     return
 
                 # 2. Salvamento no Firestore
                 with st.spinner(f"Salvando {len(df_to_save)} registros no Firestore..."):
-                    # CHAMA A FUNÇÃO DE SALVAMENTO NO BANCO
                     success_save, message_save = save_processed_data_to_firestore(product, df_to_save)
                 
                 if success_save:
                     st.success(message_save)
-                    # Força a atualização do Dashboard limpando o cache
                     st.cache_data.clear() 
                 else:
                     st.error(message_save)
