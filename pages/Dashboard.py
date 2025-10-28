@@ -7,20 +7,6 @@ from utils.data_processing import fetch_asto_data, fetch_eliq_data, get_latest_u
 
 # --- Funções Auxiliares de Visualização (Mapeando o PDF) ---
 
-def get_dashboard_metrics(rovemapay_df, bionio_df, asto_df, eliq_df):
-    """Calcula as métricas principais para o header."""
-    
-    rovema_revenue = rovemapay_df['Receita'].sum() if not rovemapay_df.empty else 0
-    bionio_value = bionio_df['Valor Total Pedidos'].sum() if not bionio_df.empty else 0
-    asto_revenue = asto_df['Receita'].sum() if not asto_df.empty else 0
-    
-    total_revenue_sim = 2_146_293.35 # Valor simulado do PDF
-    nossa_receita = rovema_revenue + asto_revenue # Receita da empresa (margem dos serviços)
-    
-    margem_media = rovemapay_df['Taxa_Media'].mean() if not rovemapay_df.empty else 0.0
-    
-    return total_revenue_sim, nossa_receita, margem_media
-
 def get_ranking_data(rovemapay_df):
     """Simula a geração dos rankings de crescimento/queda e participação por bandeira."""
         
@@ -58,44 +44,40 @@ def dashboard_page():
         return
 
     st.title("ROVEMA BANK: Dashboard de Transações")
-    # REMOVIDO: st.caption("Powered by KR8")
+    st.caption("Filtros Ativos na Barra Lateral")
     log_event("VIEW_DASHBOARD", "Visualizando o dashboard principal.")
     
     # --- 0. FILTROS NA BARRA LATERAL (Sidebar) ---
     
-    # Simula o clique do botão "Atualizar" para recarregar todos os dados
     if 'update_counter' not in st.session_state:
         st.session_state['update_counter'] = 0
 
     st.sidebar.title("Filtros")
     
-    # Filtros de Data (Requisitado: Data início / Data fim)
+    # Filtros de Data
     default_end_date = date(2025, 10, 31)
     default_start_date = default_end_date - timedelta(days=90)
     
-    # Colunas de data (na sidebar para replicar o layout do PDF)
     start_date = st.sidebar.date_input("Data início", default_start_date)
     end_date = st.sidebar.date_input("Data fim", default_end_date)
     
     st.sidebar.markdown("---")
 
-    # Requisitado: Produtos
-    st.sidebar.multiselect(
+    # Filtros de Contexto
+    selected_products = st.sidebar.multiselect(
         "Produtos", 
         ["Eliq", "Asto", "Bionio", "Rovema Pay"],
         default=["Eliq", "Asto", "Bionio", "Rovema Pay"],
         help="Filtra dados pelos produtos da empresa."
     )
 
-    # Requisitado: Meios de Pagamento
-    st.sidebar.multiselect(
+    selected_payments = st.sidebar.multiselect(
         "Meios de Pagamento", 
         ["Crédito", "Débito", "Pix"],
         default=["Crédito", "Débito", "Pix"],
         help="Filtra transações pelo tipo de meio de pagamento."
     )
 
-    # Requisitado: Consultores (Baseado nos nomes simulados do PDF)
     st.sidebar.selectbox(
         "Consultores", 
         ["Todos", "Leandro", "Fernanda", "Yure", "Lorrana"],
@@ -104,7 +86,6 @@ def dashboard_page():
     
     st.sidebar.markdown("---")
     
-    # Botão Atualizar
     if st.sidebar.button("Atualizar"):
         st.session_state['update_counter'] += 1
         st.toast("Dashboard atualizado!")
@@ -125,29 +106,67 @@ def dashboard_page():
     asto_df, eliq_df, bionio_df_db, rovemapay_df_db = load_data(start_date, end_date, st.session_state['update_counter'])
     
     
-    # --- 1. MÉTRICAS DO HEADER ---
+    # --- 1. CÁLCULO CONDICIONAL DAS MÉTRICAS ---
+
+    current_rovema_revenue = 0
+    current_bionio_value = 0
+    current_asto_revenue = 0
+    current_eliq_volume = 0
+    current_margem_media = 0
+    current_valor_transacionado = 0
     
-    valor_transacionado_sim, nossa_receita, margem_media = get_dashboard_metrics(rovemapay_df_db, bionio_df_db, asto_df, eliq_df)
+    # 1. Rovema Pay (Liquido/Receita/Margem)
+    if "Rovema Pay" in selected_products and not rovemapay_df_db.empty:
+        current_rovema_revenue = rovemapay_df_db['Receita'].sum()
+        current_margem_media = rovemapay_df_db['Taxa_Media'].mean()
+        current_valor_transacionado += rovemapay_df_db['Liquido'].sum()
+
+    # 2. Bionio (Valor Total Pedidos)
+    if "Bionio" in selected_products and not bionio_df_db.empty:
+        current_bionio_value = bionio_df_db['Valor Total Pedidos'].sum()
+        current_valor_transacionado += current_bionio_value
+
+    # 3. Asto (Receita/Volume)
+    if "Asto" in selected_products and not asto_df.empty:
+        current_asto_revenue = asto_df['Receita'].sum()
+        current_valor_transacionado += asto_df['valorBruto'].sum()
+
+    # 4. Eliq (Volume)
+    if "Eliq" in selected_products and not eliq_df.empty:
+        current_eliq_volume = eliq_df['valor_total'].sum()
+        current_valor_transacionado += current_eliq_volume
+        
+    
+    # Métrica do Header
+    nossa_receita = current_rovema_revenue + current_asto_revenue
+    
+    # Valor transacionado deve ser o valor total somado (usamos o mock total do PDF se a soma for 0)
+    valor_transacionado_display = current_valor_transacionado if current_valor_transacionado > 0 else 2_146_293.35 
+    
+    
+    # --- 2. EXIBIÇÃO DAS MÉTRICAS ---
     
     col_m1, col_m2, col_m3, col_m4, col_m5, col_m6 = st.columns(6)
     
-    col_m1.metric("Transacionado (Bruto)", f"R$ {valor_transacionado_sim:,.2f}", delta="+142.49% vs. trimestre anterior")
+    col_m1.metric("Transacionado (Bruto)", f"R$ {valor_transacionado_display:,.2f}", delta="+142.49% vs. trimestre anterior")
     col_m2.metric("Nossa Receita", f"R$ {nossa_receita:,.2f}")
-    col_m3.metric("Margem Média", f"{margem_media:.2f}%")
+    col_m3.metric("Margem Média", f"{current_margem_media:.2f}%")
     col_m4.metric("Clientes Ativos", "99")
     col_m5.metric("Clientes em Queda", "16")
     
     st.markdown("---")
 
 
-    # --- BLOCO 2: EVOLUÇÃO E PARTICIPAÇÃO (Gráficos) ---
+    # --- BLOCO 3: EVOLUÇÃO E PARTICIPAÇÃO (Gráficos Condicionais) ---
     
     col_g1, col_g2 = st.columns([2, 1])
     
     # G1: Evolução do Valor Transacionado vs Receita
     with col_g1:
         st.header("Evolução do Valor Transacionado vs Receita")
-        if not rovemapay_df_db.empty:
+        
+        # O gráfico de evolução deve ser baseado nos produtos selecionados. Usamos o Rovema Pay como base principal.
+        if "Rovema Pay" in selected_products and not rovemapay_df_db.empty:
             rovema_long = rovemapay_df_db.melt('Mês', value_vars=['Receita', 'Liquido'], var_name='Métrica', value_name='Valor')
             
             evolucao_chart = alt.Chart(rovema_long).mark_line(point=True).encode(
@@ -159,14 +178,13 @@ def dashboard_page():
             
             st.altair_chart(evolucao_chart, use_container_width=True)
         else:
-            st.info("Dados de Rovema Pay insuficientes para o gráfico de evolução.")
+            st.info("Selecione 'Rovema Pay' ou 'Asto' para ver o gráfico de evolução.")
 
     # G2: Participação por Bandeira e Receita por Carteira
     with col_g2:
-        st.subheader("Participação por Bandeira")
-        
         ranking_queda_df, detalhamento_df, bandeira_df = get_ranking_data(rovemapay_df_db)
         
+        st.subheader("Participação por Bandeira")
         if not bandeira_df.empty and bandeira_df['Valor'].sum() > 0:
             bandeira_chart = alt.Chart(bandeira_df).mark_arc(outerRadius=80).encode(
                 theta=alt.Theta(field="Valor", type="quantitative"),
@@ -176,15 +194,30 @@ def dashboard_page():
             ).properties(title="")
             st.altair_chart(bandeira_chart, use_container_width=True)
         else:
-            st.warning("Dados de Bandeira insuficientes.")
+            st.warning("Dados de Bandeira insuficientes ou produto desmarcado.")
             
         st.subheader("Receita por Carteira")
         
-        # Mapeando os 4 produtos como as carteiras (Leandro, Fernanda, etc. são simulados no PDF)
+        # Filtra o DataFrame de Carteiras (Produtos)
         carteira_data = {
-            'Carteira': ['RovemaPay', 'Bionio', 'Asto', 'Eliq'],
-            'Receita Total': [nossa_receita, bionio_df_db['Valor Total Pedidos'].sum() if not bionio_df_db.empty else 0, asto_df['Receita'].sum(), eliq_df['valor_total'].sum() * 0.05]
+            'Carteira': [],
+            'Receita Total': []
         }
+        
+        if "Rovema Pay" in selected_products:
+            carteira_data['Carteira'].append('RovemaPay')
+            carteira_data['Receita Total'].append(current_rovema_revenue)
+        if "Bionio" in selected_products:
+            carteira_data['Carteira'].append('Bionio')
+            carteira_data['Receita Total'].append(current_bionio_value)
+        if "Asto" in selected_products:
+            carteira_data['Carteira'].append('Asto')
+            carteira_data['Receita Total'].append(current_asto_revenue)
+        if "Eliq" in selected_products:
+            carteira_data['Carteira'].append('Eliq')
+            # Eliq usa volume, mas é mapeado como "Receita Total" no gráfico
+            carteira_data['Receita Total'].append(current_eliq_volume) 
+        
         carteira_df = pd.DataFrame(carteira_data)
 
         if not carteira_df.empty and carteira_df['Receita Total'].sum() > 0:
@@ -195,21 +228,21 @@ def dashboard_page():
             ).properties(title="").interactive()
             st.altair_chart(carteira_chart, use_container_width=True)
         else:
-            st.warning("Dados insuficientes para Receita por Carteira.")
+            st.warning("Nenhum produto selecionado para Receita por Carteira.")
 
 
     st.markdown("---")
 
-    # --- BLOCO 3: RANKINGS E DETALHAMENTO ---
+    # --- BLOCO 4: RANKINGS E DETALHAMENTO ---
     
     col_r1, col_r2 = st.columns(2)
 
-    # R1: TOP 10 QUEDA
+    # R1: TOP 10 QUEDA (Estático)
     with col_r1:
         st.subheader("Top 10 Queda")
         st.dataframe(ranking_queda_df[['Cliente', 'CNPJ', 'Variação']].rename(columns={'Variação': 'Variação %'}), hide_index=True, use_container_width=True)
 
-    # R2: TOP 10 CRESCIMENTO
+    # R2: TOP 10 CRESCIMENTO (Estático)
     with col_r2:
         st.subheader("Top 10 Crescimento")
         ranking_crescimento_data = {
@@ -221,7 +254,7 @@ def dashboard_page():
 
     st.markdown("---")
     
-    # --- BLOCO 4: DETALHAMENTO E INSIGHTS ---
+    # --- BLOCO 5: DETALHAMENTO E INSIGHTS ---
     
     st.header("Detalhamento por Cliente")
     
