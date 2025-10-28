@@ -2,14 +2,20 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, auth, firestore, storage
 import json
-import requests # Importe a biblioteca requests
+import requests
+import pandas as pd # Adicionado para uso em funções de Logs/Gestão
+from google.cloud.firestore import SERVER_TIMESTAMP as server_timestamp # Renomeado para uso limpo
 
-# --- Configuração do Firebase ---
+# --- 1. CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE ---
 
-# Adiciona a função para pegar a chave da API
 @st.cache_resource
 def get_web_api_key():
-    return st.secrets.get("FIREBASE_WEB_API_KEY")
+    """Busca a chave da API Web dos secrets e verifica sua existência."""
+    api_key = st.secrets.get("FIREBASE_WEB_API_KEY")
+    if not api_key:
+        # Tenta buscar a chave caso ela tenha sido salva como parte do dicionário JSON
+        api_key = st.secrets.get("firebase_service_account", {}).get("FIREBASE_WEB_API_KEY")
+    return api_key
 
 FIREBASE_WEB_API_KEY = get_web_api_key()
 
@@ -18,12 +24,13 @@ def initialize_firebase():
     """Inicializa o Firebase Admin SDK usando Streamlit Secrets."""
     
     if "firebase_service_account" not in st.secrets:
-        st.error("ERRO: As credenciais do Firebase não foram encontradas no `.streamlit/secrets.toml`.")
+        st.error("ERRO: As credenciais do Firebase (JSON) não foram encontradas no Secrets.")
         return None, None, None, None
 
     try:
         cred_dict = dict(st.secrets["firebase_service_account"])
         
+        # Trata quebras de linha na chave privada
         if 'private_key' in cred_dict:
             cred_dict['private_key'] = cred_dict['private_key'].replace('\\n', '\n')
             
@@ -47,9 +54,8 @@ def initialize_firebase():
 
 auth_service, db, bucket, project_id = initialize_firebase()
 
-# --- Funções de Logs (Logs Page) ---
+# --- 2. FUNÇÕES DE LOGS (Auditoria) ---
 
-# ... log_event function (MANTER IGUAL) ...
 def log_event(action: str, details: str = ""):
     """Registra um evento de log no Firestore."""
     if 'db' not in st.session_state:
@@ -58,7 +64,7 @@ def log_event(action: str, details: str = ""):
     user_email = st.session_state.get('user_email', 'SISTEMA')
     
     log_entry = {
-        "timestamp": firestore.SERVER_TIMESTAMP,
+        "timestamp": server_timestamp,
         "user_email": user_email,
         "action": action,
         "details": details
@@ -66,9 +72,10 @@ def log_event(action: str, details: str = ""):
     try:
         st.session_state['db'].collection('logs').add(log_entry)
     except Exception as e:
-        st.warning(f"Não foi possível registrar o log: {e}")
+        # Usa st.toast para logs não críticos, evitando poluir o console
+        st.toast(f"Não foi possível registrar o log: {e}", icon="⚠️")
 
-# --- Funções de Autenticação (Login) ---
+# --- 3. FUNÇÕES DE AUTENTICAÇÃO (Login e Logout) ---
 
 def login_user(email: str, password: str):
     """
@@ -76,8 +83,8 @@ def login_user(email: str, password: str):
     e recupera o papel (role) no Firestore.
     """
     if not FIREBASE_WEB_API_KEY:
-        log_event("LOGIN_ERROR", "Chave da API Web não configurada nos secrets.")
-        return False, "Erro de configuração: Chave da API Web não encontrada."
+        log_event("LOGIN_ERROR", "Chave da API Web não configurada ou vazia nos secrets.")
+        return False, "Erro de configuração: Chave da API Web não encontrada ou está vazia."
         
     API_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
     
@@ -122,9 +129,12 @@ def login_user(email: str, password: str):
         error_code = error_json.get('error', {}).get('message', 'UNKNOWN_ERROR')
         
         # Códigos de erro comuns do Firebase Auth
-        if error_code in ["EMAIL_NOT_FOUND", "INVALID_PASSWORD", "USER_DISABLED"]:
+        if error_code in ["EMAIL_NOT_FOUND", "INVALID_PASSWORD"]:
             log_event("LOGIN_FAIL", f"Tentativa de login falhou. Erro: {error_code}.")
             return False, "E-mail ou senha incorretos."
+        if error_code == "USER_DISABLED":
+             log_event("LOGIN_FAIL", f"Tentativa de login falhou. Usuário desativado: {email}.")
+             return False, "Sua conta foi desativada. Contate o administrador."
         
         log_event("LOGIN_ERROR", f"Erro HTTP crítico de login para {email}: {error_code}")
         return False, f"Erro na autenticação. Contate o administrador. (Código: {error_code})"
@@ -142,28 +152,29 @@ def logout_user():
     st.session_state['user_uid'] = None
     st.rerun()
 
-# --- Funções de Gerenciamento de Acessos (Admin Page) ---
+# --- 4. FUNÇÕES DE GERENCIAMENTO DE ACESSOS (Admin) ---
 
-# ... create_user function (MANTER IGUAL) ...
 def create_user(email, password, role, name):
     """Cria um novo usuário no Firebase Auth e define o papel no Firestore."""
-    if 'db' not in st.session_state:
-        return False, "Firestore não inicializado."
+    if 'db' not in st.session_state or not auth_service:
+        return False, "Serviços Firebase não inicializados."
     
     try:
+        # 1. Cria o usuário no Firebase Authentication (para login)
         user = auth_service.create_user(email=email, password=password)
+        
+        # 2. Define o papel (role) no Firestore (para autorização)
         st.session_state['db'].collection('users').document(user.uid).set({
             'email': email,
             'role': role,
             'nome': name
         })
         log_event("ADMIN_ACTION", f"Usuário criado: {email} com papel {role}.")
-        return True, f"Usuário {email} criado com sucesso!"
+        return True, f"Usuário {email} criado com sucesso! UID: {user.uid}"
     except Exception as e:
         log_event("ADMIN_ACTION_FAIL", f"Falha ao criar usuário {email}: {e}")
         return False, f"Erro ao criar usuário: {e}"
 
-# ... get_all_users function (MANTER IGUAL) ...
 def get_all_users():
     """Retorna a lista completa de usuários e seus papéis."""
     if 'db' not in st.session_state:
@@ -182,16 +193,14 @@ def get_all_users():
         st.error(f"Erro ao buscar usuários: {e}")
         return []
         
-# --- Funções de Upload e Armazenamento (Upload Page) ---
+# --- 5. FUNÇÕES DE UPLOAD E ARMAZENAMENTO ---
 
-# ... upload_file_and_store_ref function (MANTER IGUAL) ...
 def upload_file_and_store_ref(uploaded_file, product_name):
     """
     Armazena o arquivo no Storage e registra a referência no Firestore.
-    O processamento do CSV em dados estruturados ficaria no data_processing.py
     """
-    if 'bucket' not in st.session_state:
-        return False, "Storage não inicializado."
+    if 'bucket' not in st.session_state or 'db' not in st.session_state:
+        return False, "Storage ou Firestore não inicializados."
 
     try:
         # Define o caminho do arquivo no Storage
@@ -208,7 +217,7 @@ def upload_file_and_store_ref(uploaded_file, product_name):
             'filename': uploaded_file.name,
             'storage_path': file_path,
             'uploaded_by': st.session_state['user_email'],
-            'timestamp': firestore.SERVER_TIMESTAMP
+            'timestamp': server_timestamp
         })
         
         log_event("FILE_UPLOAD", f"Arquivo de {product_name} enviado para {file_path}.")
