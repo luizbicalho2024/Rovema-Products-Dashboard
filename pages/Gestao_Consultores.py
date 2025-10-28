@@ -35,7 +35,7 @@ def fetch_consultants_and_map():
             
     return consultants, assignment_map
 
-@st.cache_data(ttl=600)
+# [CACHE REMOVIDO]
 def load_all_clients_df():
     """Carrega o DataFrame de todos os clientes e seus produtos."""
     return get_all_clients_with_products()
@@ -64,7 +64,7 @@ def consultant_management_page():
         return
 
     if all_clients_df.empty:
-        st.warning("Nenhum cliente (empresa/cnpj) encontrado nos dados de produtos. Faça upload de dados primeiro.")
+        st.warning("Nenhum cliente (empresa/cnpj) encontrado nos dados de produtos. Verifique os uploads e as APIs.")
         return
 
     consultant_names = {c['nome']: c['uid'] for c in consultants if c.get('nome')}
@@ -165,13 +165,13 @@ def consultant_management_page():
 
         # --- 4. Exibição da Carteira Atual e Conflitos ---
         with st.expander("Verificar Clientes Atribuídos a Outros Consultores"):
-            st.warning("Os clientes abaixo já estão atribuídos a outros consultores e não podem ser vinculados.")
+            st.warning("Os clientes abaixo já estão atribuídos a outros consultores e não podem ser vinculados.", icon="🔒")
             
             conflicts = []
             for client_id, assignment in assignment_map.items():
                 if assignment['uid'] != selected_uid:
                     conflicts.append({
-                        "Cliente (CNPJ/ID)": client_id,
+                        "Cliente (ID)": client_id,
                         "Consultor Atual": assignment['nome']
                     })
             
