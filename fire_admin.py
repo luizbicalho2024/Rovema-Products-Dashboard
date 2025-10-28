@@ -104,7 +104,6 @@ def log_event(action: str, details: str = ""):
 def login_user(email: str, password: str):
     """Autentica o usuário e recupera o papel (role) no Firestore."""
     
-    # Puxa o DB do session_state
     db = st.session_state.get('db')
 
     if not FIREBASE_WEB_API_KEY:
@@ -124,14 +123,11 @@ def login_user(email: str, password: str):
         if not user_uid:
             return False, "E-mail ou senha incorretos."
 
-        # *** CORREÇÃO ***
-        # Esta é a verificação que estava falhando.
         if db is None:
-            # Tenta reinicializar caso tenha falhado no boot
             if not initialize_firebase():
                 log_event("LOGIN_ERROR", "Firestore indisponível devido a falha nas credenciais iniciais.")
                 return False, "Erro crítico de serviço: Contate o administrador."
-            db = st.session_state.get('db') # Tenta pegar novamente
+            db = st.session_state.get('db')
 
         user_doc = db.collection('users').document(user_uid).get()
         if not user_doc.exists:
@@ -140,6 +136,12 @@ def login_user(email: str, password: str):
         
         user_data = user_doc.to_dict()
         role = user_data.get('role', 'Usuário')
+        
+        # **NOVA VERIFICAÇÃO DE STATUS**
+        status = user_data.get('status', 'ativo')
+        if status == 'inativo':
+            log_event("LOGIN_FAIL", f"Tentativa de login de usuário inativo: {email}.")
+            return False, "Esta conta de usuário está desabilitada. Contate o administrador."
         
         st.session_state['authenticated'] = True
         st.session_state['user_email'] = email
@@ -168,17 +170,13 @@ def logout_user():
     """Limpa o estado da sessão e desloga o usuário."""
     log_event("LOGOUT", "Usuário deslogou.")
     
-    # Lista de chaves para preservar (como a conexão 'db')
     keys_to_preserve = ['db', 'auth_service', 'bucket', 'project_id']
     preserved_state = {k: st.session_state[k] for k in keys_to_preserve if k in st.session_state}
     
-    # Limpa todo o session state
     st.session_state.clear()
     
-    # Restaura o estado da conexão
     st.session_state.update(preserved_state)
     
-    # Define o estado de logout
     st.session_state['authenticated'] = False
     
     st.rerun()
@@ -186,7 +184,10 @@ def logout_user():
 # --- 4. FUNÇÕES DE GERENCIAMENTO DE ACESSOS (Admin) ---
 
 def create_user(email, password, role, name):
-    """Cria um novo usuário no Firebase Auth e define o papel no Firestore."""
+    """
+    Cria um novo usuário no Firebase Auth e define o papel no Firestore.
+    [ATUALIZADO] Adiciona campos padrão de status e carteira.
+    """
     db = st.session_state.get('db')
     auth_service = st.session_state.get('auth_service')
 
@@ -196,10 +197,13 @@ def create_user(email, password, role, name):
     try:
         user = auth_service.create_user(email=email, password=password)
         
+        # Adiciona os novos campos padrão
         db.collection('users').document(user.uid).set({
             'email': email,
             'role': role,
-            'nome': name
+            'nome': name,
+            'status': 'ativo',       # Novo
+            'carteira_cnpjs': []   # Novo
         })
         log_event("ADMIN_ACTION", f"Usuário criado: {email} com papel {role}.")
         return True, f"Usuário {email} criado com sucesso! UID: {user.uid}"
@@ -207,16 +211,48 @@ def create_user(email, password, role, name):
         log_event("ADMIN_ACTION_FAIL", f"Falha ao criar usuário {email}: {e}")
         return False, f"Erro ao criar usuário: {e}"
 
-def get_all_users():
-    """Retorna a lista completa de usuários e seus papéis."""
+def update_user_details(uid: str, data_dict: dict):
+    """
+    [NOVO] Atualiza os dados de um usuário na coleção 'users' do Firestore.
+    """
+    db = st.session_state.get('db')
+    if db is None:
+        return False, "Firestore indisponível."
+        
+    try:
+        db.collection('users').document(uid).update(data_dict)
+        log_event("ADMIN_ACTION", f"Detalhes do usuário {uid} atualizados. Dados: {data_dict}")
+        return True, "Usuário atualizado com sucesso."
+    except Exception as e:
+        log_event("ADMIN_ACTION_FAIL", f"Falha ao atualizar usuário {uid}: {e}")
+        return False, f"Erro ao atualizar usuário: {e}"
+
+
+def get_all_users(role_filter: str = None):
+    """
+    Retorna a lista completa de usuários e seus papéis.
+    [ATUALIZADO] Permite filtrar por 'role'.
+    """
     db = st.session_state.get('db')
     if db is None:
         return []
     
     try:
         users_ref = db.collection('users')
-        docs = users_ref.stream()
-        user_list = [doc.to_dict() | {'uid': doc.id} for doc in docs]
+        
+        # Aplica o filtro se fornecido
+        if role_filter:
+            query = users_ref.where('role', '==', role_filter)
+        else:
+            query = users_ref
+            
+        docs = query.stream()
+        user_list = []
+        for doc in docs:
+            user_data = doc.to_dict()
+            user_data['uid'] = doc.id
+            user_list.append(user_data)
+            
         return user_list
     except Exception as e:
         st.error(f"Erro ao buscar usuários: {e}")
@@ -224,10 +260,13 @@ def get_all_users():
 
 def get_all_consultores():
     """Retorna uma lista de nomes de usuários para filtros."""
-    users = get_all_users()
+    # Filtra apenas por usuários ativos com a role 'Usuário'
+    users = get_all_users(role_filter='Usuário')
     if users:
-        # Filtra por papel se necessário, ou apenas pega nomes
-        nomes = sorted([user.get('nome', 'N/A') for user in users if user.get('nome')])
+        nomes = sorted([
+            user.get('nome', 'N/A') for user in users 
+            if user.get('nome') and user.get('status', 'ativo') == 'ativo'
+        ])
         return ['Todos'] + nomes
     return ['Todos']
 
