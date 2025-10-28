@@ -63,7 +63,7 @@ def fetch_eliq_data(start_date: date, end_date: date):
     return df.groupby('data_cadastro')[['valor_total', 'consumo_medio']].agg({'valor_total': 'sum', 'consumo_medio': 'mean'}).reset_index()
 
 
-# [Mantenha process_uploaded_file e as funções de processamento RAW IGUAIS]
+# --- Funções de Processamento e Agregação (Com Filtro de Data) ---
 
 def process_uploaded_file(uploaded_file, product_name):
     """Processa o arquivo, faz a limpeza, padroniza nomes de coluna e retorna o DataFrame RAW."""
@@ -159,7 +159,7 @@ def process_rovemapay_data(df):
 
 # --- FUNÇÃO: BUSCAR DADOS DO FIRESTORE E AGREGAR (CORRIGIDA) ---
 
-# NOTE: A função precisa aceitar start_date e end_date para que o cache funcione corretamente
+# FIX CRÍTICO: A função agora aceita 3 argumentos para corrigir o TypeError
 @st.cache_data(ttl=600, show_spinner=False)
 def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
     """
@@ -177,7 +177,7 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
 
         df = pd.DataFrame(data_list)
         
-        # 2. FILTRAGEM E AGREGAÇÃO (Aplica o filtro de data no Pandas)
+        # 2. FILTRAGEM E AGREGAÇÃO
         
         if product_name == 'Bionio':
             DATA_COL = 'data_da_criação_do_pedido'
@@ -186,7 +186,7 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
             df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
             df = df.dropna(subset=[DATA_COL, 'valor_total_do_pedido'])
             
-            # FILTRO DE DATA RAW
+            # APLICA FILTRO DE DATA
             df = df[
                 (df[DATA_COL].dt.date >= start_date) & 
                 (df[DATA_COL].dt.date <= end_date)
@@ -204,12 +204,14 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
             df[DATA_COL] = pd.to_datetime(df[DATA_COL], errors='coerce').dt.normalize()
             df = df.dropna(subset=[DATA_COL])
             
-            # FILTRO DE DATA RAW
+            # APLICA FILTRO DE DATA
             df = df[
                 (df[DATA_COL].dt.date >= start_date) & 
                 (df[DATA_COL].dt.date <= end_date)
             ].copy()
             
+            df['status'] = df['status'].astype(str)
+
             df_agg = df.groupby([df[DATA_COL].dt.to_period('M'), 'status']).agg(
                 Liquido=('liquido', 'sum'),
                 Receita=('receita', 'sum'),
@@ -226,4 +228,6 @@ def get_latest_uploaded_data(product_name, start_date: date, end_date: date):
         return pd.DataFrame()
 
     except Exception as e:
-        log_event("FIRESTORE_FETCH_FAIL", f"Falha ao buscar dados de {product_name} no Firestore:
+        # Garante que o f-string está fechado
+        log_event("FIRESTORE_FETCH_FAIL", f"Falha ao buscar dados de {product_name} no Firestore: {e}") 
+        return pd.DataFrame
