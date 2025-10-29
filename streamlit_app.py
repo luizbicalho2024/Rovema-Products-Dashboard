@@ -48,7 +48,7 @@ if "user_email" not in st.session_state:
 else:
     st.success(f"Login como **{st.session_state.user_email}** realizado!")
     st.write("Selecione um dashboard na barra lateral para começar.")
-    st.page_link("pages/1_🏠_Visao_Geral.py", label="Ir para o Dashboard", icon="🏠")
+    st.page_link("pages/1_Visao_Geral.py", label="Ir para o Dashboard", icon="🏠")
 
     if st.button("Sair"):
         for key in st.session_state.keys():
