@@ -1,9 +1,5 @@
-# Em requirements.txt
 streamlit
-firebase-admin
 pandas
+requests
 plotly
-google-cloud-bigquery  
-pyarrow                
-db-dtypes              
-matplotlib-venn
+firebase-admin
