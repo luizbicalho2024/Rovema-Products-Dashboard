@@ -2,10 +2,11 @@
 
 import streamlit as st
 import pandas as pd
-from firebase_admin import credentials, firestore, auth # 'auth' é importado para funções de gestão
+from firebase_admin import credentials, firestore, auth
 import firebase_admin
-from datetime import datetime
 import random
+import copy # Importação necessária para criar uma cópia mutável
+from datetime import datetime
 
 # --- Inicialização Única do Firebase ---
 
@@ -17,11 +18,12 @@ def init_firebase():
             st.error("Erro: Seção 'firebase' ausente no secrets.toml.")
             return None
         
-        cred_dict = st.secrets["firebase"]["credentials"]
+        # 🚨 CORREÇÃO CRÍTICA DE MUTABILIDADE: Cria uma cópia profunda (deepcopy) do dicionário
+        cred_dict = copy.deepcopy(st.secrets["firebase"]["credentials"])
         
-        # 🚨 CORREÇÃO CRÍTICA PARA CHAVE PRIVADA MULTILINHA 🚨
+        # 🚨 CORREÇÃO DA CHAVE PRIVADA (Sanitização)
         if 'private_key' in cred_dict:
-            # Saneamento: Substitui sequências de escape de nova linha pelo caractere '\n'
+            # Substitui o escape de nova linha lido (que pode ser "\\n") pelo caractere "\n".
             cred_dict['private_key'] = cred_dict['private_key'].replace('\\n', '\n')
             
         if not firebase_admin._apps:
@@ -37,13 +39,10 @@ def init_firebase():
 db = init_firebase()
 
 
-# --- Funções de ETL (Ingestão) - RESOLVE O IMPORTERROR ---
+# --- Funções de ETL (Ingestão) ---
 
 def ingest_csv_data(db_client, file_content, collection_name):
-    """
-    Lê CSV, normaliza (incluindo correção de SyntaxWarning) e salva no Firestore.
-    RESOLVE O ERRO DE IMPORTAÇÃO: Esta função é o que estava faltando para o ui_pages.py.
-    """
+    """Lê CSV, normaliza (incluindo correção de SyntaxWarning) e salva no Firestore."""
     if db_client is None:
         st.error("Não foi possível conectar ao banco de dados.")
         return
@@ -70,12 +69,12 @@ def ingest_csv_data(db_client, file_content, collection_name):
                                  .astype(float))
         
         # Inserção de Novos Dados em lotes (Batch Write)
-        # Limpa e insere
         docs_to_delete = db_client.collection(collection_name).limit(500).stream() 
         batch_delete = db_client.batch()
         for doc in docs_to_delete:
             batch_delete.delete(doc.reference)
         batch_delete.commit()
+        st.success("Limpeza parcial concluída.")
         
         data_to_save = df.to_dict('records')
         batch_size = 400 
@@ -142,7 +141,6 @@ def get_combined_data(db_client):
     if not df_carteira.empty and not df_combined.empty:
          valid_uids = df_carteira['consultor_uid'].unique()
          if valid_uids.size > 0:
-            # MOCK para simular a atribuição para o BI
             df_combined['consultor_uid'] = df_combined.apply(lambda x: random.choice(valid_uids) if random.random() < 0.6 else None, axis=1)
 
     return df_combined
@@ -161,6 +159,7 @@ def get_firestore_data(collection_name):
         return pd.DataFrame()
     
     try:
+        # Usa a variável 'db' inicializada no topo do módulo
         docs = db.collection(collection_name).stream()
         data = [doc.to_dict() for doc in docs]
         return pd.DataFrame(data)
