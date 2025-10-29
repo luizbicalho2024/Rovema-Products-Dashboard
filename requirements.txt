@@ -6,3 +6,4 @@ plotly
 google-cloud-bigquery  
 pyarrow                
 db-dtypes              
+matplotlib-venn
