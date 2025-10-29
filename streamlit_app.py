@@ -1,181 +1,56 @@
 import streamlit as st
-import pandas as pd
-from fire_admin import initialize_firebase, login_user, logout_user, log_event
+from fire_admin import get_auth, initialize_firebase
+import time
 
-# Define a configuração da página
-st.set_page_config(
-    page_title="Rovema | Multi-Produto Dashboard",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(layout="centered", page_title="Login")
 
-# --- CSS para a Página de Login ---
-def load_css():
-    """Adiciona CSS para centralizar e estilizar a caixa de login."""
-    st.markdown("""
-    <style>
-        /* Esconde a sidebar na página de login */
-        div[data-testid="stSidebarNav"] {
-            display: none;
-        }
+# Inicializa o Firebase (necessário em todas as páginas)
+initialize_firebase()
 
-        /* Container do Login */
-        .login-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto; /* Centraliza horizontalmente */
-            max-width: 450px; /* Largura máxima do card de login */
-            padding: 2.5rem;
-            border-radius: 15px;
-            box-shadow: 0 8px 16px rgba(0,0,0,0.1); /* Sombra suave */
-            background-color: #ffffff; /* Fundo branco para o card */
-            margin-top: 5vh; /* Espaçamento do topo reduzido */
-        }
-
-        /* Logo dentro do container */
-        .login-container img {
-             margin-bottom: 1.5rem; /* Espaço abaixo da logo */
-        }
-
-        /* Título dentro do container */
-        .login-container .stTitle {
-            text-align: center;
-            margin-top: 0; /* Remove margem extra acima do título */
-        }
-
-        /* Subheader dentro do container */
-        .login-container .stSubheader {
-            text-align: center;
-            color: #4f4f4f; /* Cor mais suave */
-            margin-bottom: 1rem; /* Espaço abaixo do subheader */
-        }
-
-        /* Botão de login com largura total */
-        .login-container .stButton > button {
-            width: 100%;
-            background-color: #004080; /* Cor primária (exemplo) */
-            color: white;
-            border-radius: 8px;
-        }
-        .login-container .stButton > button:hover {
-            background-color: #0059b3; /* Cor no hover */
-            color: white;
-            border: 1px solid #0059b3;
-        }
-
-        /* Alertas (erro, warning) */
-        .login-container .stAlert {
-            width: 100%;
-        }
-
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- Função de Verificação de Usuários (Cacheada e Corrigida) ---
-@st.cache_data(ttl=3600) # Cacheia o resultado por 1 hora
-def check_if_users_exist(): # SEM argumento db_conn
-    """Verifica (com cache) se algum usuário existe na coleção 'users'."""
-    # Pega o DB de dentro da função
-    db_conn = st.session_state.get('db')
-    if db_conn:
-        try:
-            # Faz a leitura mínima necessária
-            docs = db_conn.collection('users').limit(1).get()
-            return len(docs) > 0 # Retorna True se > 0 usuários existirem
-        except Exception as e:
-            print(f"ERRO Firestore (Check Users): {e}")
-            # Retorna True para evitar mostrar o alerta se houver erro
-            return True
-    # Retorna True se DB não estiver conectado, para evitar mostrar o alerta
-    return True
-
-# 1. Inicializa o Firebase
-initialization_success = initialize_firebase()
-
-# Inicializa o estado de autenticação
-if 'authenticated' not in st.session_state:
-    st.session_state['authenticated'] = False
-    st.session_state['user_role'] = None
-
-# --- Página de Login ---
-
-if not st.session_state['authenticated']:
-
-    load_css()
-
-    # --- Layout do Container de Login ---
-    # Abre o container ANTES de qualquer elemento de UI
-    st.markdown('<div class="login-container">', unsafe_allow_html=True)
-
-    # Coloca a logo AQUI, dentro do container
+def login_user(email, password):
+    """
+    Autentica o usuário. Esta é uma implementação SIMULADA.
+    O Firebase Admin SDK (backend) não pode verificar senhas.
+    Você precisa do Firebase Client SDK (frontend) para um login real
+    ou pode apenas verificar se o usuário existe no Auth.
+    """
     try:
-        st.image("assets/logoRB.png", width=250)
-    except FileNotFoundError:
-        st.error("Erro: Arquivo 'assets/logoRB.png' não encontrado.")
-    except Exception as e:
-        st.error(f"Erro ao carregar a logo: {e}")
+        auth = get_auth()
+        user = auth.get_user_by_email(email)
+        
+        # SIMULAÇÃO: Se o usuário existe, o login é bem-sucedido.
+        # Em um app real, você não faria isso.
+        
+        st.session_state.user_email = user.email
+        st.session_state.user_uid = user.uid
+        st.rerun()
 
-    # Continua com o resto do formulário DENTRO do container
-    st.title("Rovema Bank Pulse 📈")
-    st.subheader("Sistema de Gestão de Performance")
-    st.markdown("---")
+    except Exception as e:
+        st.error(f"Erro de login: {e}")
+        st.error("Verifique seu e-mail. Para esta demo, a senha não é validada.")
+
+# --- Interface de Login ---
+if "user_email" not in st.session_state:
+    st.title("Painel de Controle Unificado 🚀")
+    st.subheader("Por favor, faça o login para continuar")
 
     with st.form("login_form"):
-        email = st.text_input("E-mail:")
-        password = st.text_input("Senha:", type="password")
-        st.markdown("<br>", unsafe_allow_html=True)
-        login_button = st.form_submit_button("Entrar")
+        email = st.text_input("Email")
+        password = st.text_input("Senha", type="password") # Senha é coletada mas não validada aqui
+        submitted = st.form_submit_button("Entrar")
 
-        if login_button:
-            success, message = login_user(email, password)
-            if success:
-                st.success(f"Bem-vindo, {st.session_state['user_email']} ({st.session_state['user_role']})!")
-                check_if_users_exist.clear() # Limpa cache após login
-                st.rerun()
+        if submitted:
+            if email and password:
+                with st.spinner("Autenticando..."):
+                    login_user(email, password)
             else:
-                st.error(message)
-
-    st.markdown("---")
-
-    with st.expander("Informações de Nível de Acesso"):
-        st.markdown(
-            """
-            * **Nível Admin:** Acesso completo.
-            * **Nível Usuário:** Acesso ao Dashboard e Upload.
-            """
-        )
-
-    # Aviso de Setup (Usa a função cacheada sem argumento)
-    if initialization_success:
-        # --- CORREÇÃO DO ERRO UnhashableParamError ---
-        # Chama a função cacheada SEM passar o db
-        users_exist = check_if_users_exist()
-        # --- FIM DA CORREÇÃO ---
-
-        # Mostra o alerta apenas se a conexão funcionou E a função cacheada retornou False
-        # (Ainda pega o 'db' do state aqui só para a condição 'if db_conn_check')
-        db_conn_check = st.session_state.get('db')
-        if db_conn_check and not users_exist:
-             st.warning("⚠️ **Alerta de Setup:** Crie seu primeiro usuário 'Admin' manualmente no Console do Firebase.")
-    else:
-        st.error("Falha na conexão com o Firebase. Verifique os logs e o arquivo secrets.toml.")
-
-    # --- CORREÇÃO DA POSIÇÃO DA LOGO ---
-    # Fecha o container DEPOIS de todos os elementos da página de login
-    st.markdown('</div>', unsafe_allow_html=True)
-    # --- FIM DA CORREÇÃO ---
-
-# --- Dashboard Principal (Após Login) ---
+                st.warning("Por favor, preencha email e senha.")
 else:
-    # Mostra a barra lateral normalmente quando logado
-    st.sidebar.title("Rovema Bank Pulse")
-    st.sidebar.markdown(f"**Usuário:** `{st.session_state['user_email']}`")
-    st.sidebar.markdown(f"**Nível:** **`{st.session_state['user_role']}`**")
-    st.sidebar.markdown("---")
+    st.success(f"Login como **{st.session_state.user_email}** realizado!")
+    st.write("Selecione um dashboard na barra lateral para começar.")
+    st.page_link("pages/1_🏠_Visao_Geral.py", label="Ir para o Dashboard", icon="🏠")
 
-    if st.sidebar.button("Logout", help="Sair do sistema com segurança"):
-        check_if_users_exist.clear() # Limpa cache ao deslogar
-        logout_user()
+    if st.button("Sair"):
+        for key in st.session_state.keys():
+            del st.session_state[key]
+        st.rerun()
