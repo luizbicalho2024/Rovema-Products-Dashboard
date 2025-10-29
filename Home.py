@@ -1,7 +1,11 @@
-# main_app.py
+# Home.py (ou main_app.py)
 
 import streamlit as st
+# ... (outras importações)
+import copy # Garanta que esta linha está presente para a cópia profunda
 from app import auth, ui_pages, db_utils
+
+# ... (Restante do código de roteamento) ...
 
 # --- Configuração da Página Streamlit ---
 st.set_page_config(layout="wide", page_title="BI Estratégia Comercial Pro")
