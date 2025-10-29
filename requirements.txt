@@ -1,7 +1,8 @@
+# Em requirements.txt
 streamlit
 firebase-admin
-requests
 pandas
-numpy
-altair
-openpyxl
+plotly
+google-cloud-bigquery  
+pyarrow                
+db-dtypes              
