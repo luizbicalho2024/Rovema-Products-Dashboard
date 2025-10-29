@@ -2,4 +2,4 @@
 
 [theme]
 # Força o tema light padrão do Streamlit
-base = "light"
+base = "dark"
