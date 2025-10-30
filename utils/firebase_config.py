@@ -1,54 +1,43 @@
-# utils/firebase_config.py
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 import json
 import os
 
-# Define o nome do arquivo temporário
-TEMP_SERVICE_ACCOUNT_FILE = "temp_service_account.json"
-
-# Carrega a configuração web (para login)
-firebase_config = st.secrets["firebase_web_config"]
+# Carrega as credenciais do Streamlit Secrets
+try:
+    creds_dict = st.secrets["firebase_service_account"]
+    firebase_config = st.secrets["firebase_web_config"]
+except KeyError as e:
+    st.error(f"ERRO DE CONFIGURAÇÃO: Secret '{e.args[0]}' não encontrado.")
+    st.error("Por favor, verifique se o painel de Secrets no Streamlit Cloud está 100% correto.")
+    st.stop()
 
 @st.cache_resource
 def init_firebase_admin():
     """
-    Inicializa o SDK Admin do Firebase de forma robusta,
-    escrevendo as credenciais em um arquivo JSON temporário
-    para contornar bugs de parsing do Streamlit Secrets.
+    Inicializa o SDK Admin do Firebase.
     """
     try:
         # Verifica se o app já foi inicializado
         firebase_admin.get_app()
     except ValueError:
-        # Se não foi inicializado, faz a inicialização
-        creds_dict = st.secrets["firebase_service_account"]
-        
-        # ETAPA DE VERIFICAÇÃO CRUCIAL:
-        # Verifica se o Streamlit leu os secrets como um dicionário
+        # ERRO DE CONFIGURAÇÃO MAIS COMUM:
+        # Se creds_dict não for um dicionário, o Streamlit leu o TOML errado.
         if not isinstance(creds_dict, dict):
             st.error("ERRO DE CONFIGURAÇÃO CRÍTICO!")
             st.error("Os 'Secrets' do [firebase_service_account] estão formatados como TEXTO, não como um DICIONÁRIO.")
-            st.error("Isso acontece se você colar os secrets incorretamente no painel do Streamlit Cloud.")
-            st.error("Por favor, apague seus secrets e cole o bloco TOML da minha resposta anterior novamente.")
+            st.error("A causa provável é a formatação da 'private_key'.")
+            st.error("SOLUÇÃO: Use o bloco TOML exato da minha resposta (com a 'private_key' em linha única).")
             st.stop()
             
         try:
-            # Escreve o dicionário de credenciais em um arquivo JSON temporário
-            with open(TEMP_SERVICE_ACCOUNT_FILE, "w") as f:
-                json.dump(creds_dict, f)
-
-            # Inicializa o Firebase Admin SDK usando o CAMINHO DO ARQUIVO
-            cred = credentials.Certificate(TEMP_SERVICE_ACCOUNT_FILE)
+            # Inicializa o app usando o DICIONÁRIO de credenciais
+            cred = credentials.Certificate(creds_dict)
             firebase_admin.initialize_app(cred)
-            
-            # (Opcional) Limpa o arquivo temporário após a inicialização
-            # if os.path.exists(TEMP_SERVICE_ACCOUNT_FILE):
-            #    os.remove(TEMP_SERVICE_ACCOUNT_FILE)
 
         except Exception as e:
-            st.error(f"Falha ao inicializar o Firebase Admin com o arquivo temporário: {e}")
+            st.error(f"Falha ao inicializar o Firebase Admin. Erro: {e}")
             st.stop()
 
     return firestore.client()
