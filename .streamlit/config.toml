@@ -1,5 +1,10 @@
-# .streamlit/config.toml
-
 [theme]
-# Força o tema light padrão do Streamlit
-base = "dark"
+base="light"
+primaryColor="#0068C9" # Um azul moderno
+backgroundColor="#FFFFFF"
+secondaryBackgroundColor="#F0F2F6"
+textColor="#0F1116"
+font="sans serif"
+
+[server]
+runOnSave = true
