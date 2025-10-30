@@ -113,14 +113,12 @@ def batch_write_to_firestore(records):
 def process_bionio_csv(uploaded_file):
     """Processa o CSV Bionio."""
     try:
-        # --- CORREÇÃO APLICADA AQUI ---
         df = pd.read_csv(
             uploaded_file, 
             sep=';', 
             dtype={'CNPJ da organização': str}, 
             encoding='latin-1'
         )
-        # -----------------------------
     except Exception as e:
         st.error(f"Erro ao ler o CSV: {e}")
         return
@@ -192,14 +190,12 @@ def process_bionio_csv(uploaded_file):
 def process_rovema_csv(uploaded_file):
     """Processa o CSV Rovema Pay."""
     try:
-        # --- CORREÇÃO APLICADA AQUI ---
         df = pd.read_csv(
             uploaded_file, 
             sep=';', 
             dtype=str, 
             encoding='latin-1'
         )
-        # -----------------------------
     except Exception as e:
         st.error(f"Erro ao ler o CSV: {e}")
         return
@@ -271,23 +267,27 @@ def process_rovema_csv(uploaded_file):
 
 async def process_asto_api(start_date, end_date):
     """Processa a API ASTO (Logpay)."""
-    # Lê as credenciais dos Secrets
     try:
         creds = st.secrets["api_credentials"]
-        BASE_URL = creds["asto_base_url"]
+        
+        # --- CORREÇÃO APLICADA AQUI ---
+        # Lê o URL completo, assim como a API ELIQ
+        URL_ASTO = creds["asto_url"] 
+        # -----------------------------
+        
         api_user = creds["asto_username"]
         api_pass = creds["asto_password"]
-        
         asto_spread_rate = float(creds.get("asto_spread_rate", 0.015)) 
+        
     except KeyError as e:
         st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets.")
+        st.error("Certifique-se de que 'asto_url', 'asto_username' e 'asto_password' existem.")
         return
     except Exception as e:
         st.error(f"Erro ao ler Secrets da API: {e}")
         return
 
-    URL_ASTO = f"{BASE_URL}/api/AppFrota/Abastecimentos" 
-    
+    # Parâmetros de data
     params = {
         "dataInicial": start_date.strftime("%Y-%m-%d"),
         "dataFinal": end_date.strftime("%Y-%m-%d")
@@ -298,7 +298,10 @@ async def process_asto_api(start_date, end_date):
     
     try:
         async with httpx.AsyncClient(auth=auth, timeout=30.0) as client:
+            # --- CORREÇÃO APLICADA AQUI ---
+            # Chama o URL_ASTO (completo) lido dos secrets
             response = await client.get(URL_ASTO, params=params)
+            # -----------------------------
             response.raise_for_status() # Lança erro se a API falhar
             data = response.json()
 
@@ -358,7 +361,8 @@ async def process_asto_api(start_date, end_date):
         return total_saved, total_orphans
 
     except httpx.HTTPStatusError as e:
-        st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}. Verifique se a 'asto_base_url' está correta.")
+        st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}")
+        st.error(f"Verifique se o 'asto_url' nos seus Secrets está 100% correto.")
     except Exception as e:
         st.error(f"Erro ao processar dados ASTO: {e}")
 
