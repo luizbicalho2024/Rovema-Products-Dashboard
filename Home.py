@@ -19,8 +19,7 @@ col1, col2, col3 = st.columns([1, 2, 1])
 
 with col2:
     # CORREÇÃO PARA O LOGO:
-    # A sintaxe correta para 'use_column_width=True' mudou
-    st.image("logoRB.png", use_column_width='always') 
+    st.image("logoRB.png", use_column_width='always')
     
     st.title("BI Comercial")
     st.markdown("Por favor, faça o login para continuar.")
@@ -30,7 +29,6 @@ with col2:
         password = st.text_input("Senha", type="password", placeholder="********")
         
         # CORREÇÃO PARA O BOTÃO:
-        # A sintaxe 'use_container_width=True' agora é 'width="stretch"'
         submit_button = st.form_submit_button("Entrar", width='stretch')
 
         if submit_button:
