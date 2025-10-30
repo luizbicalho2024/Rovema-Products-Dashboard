@@ -2,5 +2,6 @@ streamlit
 pandas
 plotly
 firebase-admin
+pyrebase4
 requests
 httpx
