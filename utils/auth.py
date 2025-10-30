@@ -1,6 +1,7 @@
 import streamlit as st
 # CORREÇÃO: Importa o get_auth_client
 from utils.firebase_config import get_db, get_auth_client
+from utils.logger import log_audit  # <-- Importa a nova função de log
 import time
 import httpx 
 
@@ -47,8 +48,15 @@ def login_user(email, password):
             st.session_state.user_role = user_data_db.get("role", "consultant")
             st.session_state.manager_uid = user_data_db.get("manager_uid")
             
+            # --- MELHORIA: Log de Auditoria ---
+            log_audit(action="login_success", details={"email": email})
+            # ------------------------------------
+            
             return True, "Login realizado com sucesso!"
         else:
+            # --- MELHORIA: Log de Auditoria ---
+            log_audit(action="login_failed", details={"email": email, "error": "User not found in Firestore"})
+            # ------------------------------------
             return False, "Usuário autenticado, mas não encontrado no banco de dados (Firestore)."
 
     except httpx.HTTPStatusError as e:
@@ -61,17 +69,27 @@ def login_user(email, password):
         
         # Traduz erros comuns
         if "INVALID_PASSWORD" in error_message or "EMAIL_NOT_FOUND" in error_message or "INVALID_LOGIN_CREDENTIALS" in error_message:
+            # --- MELHORIA: Log de Auditoria ---
+            log_audit(action="login_failed", details={"email": email, "error": "Invalid credentials"})
+            # ------------------------------------
             return False, "Email ou senha inválidos."
         
+        log_audit(action="login_failed", details={"email": email, "error": error_message})
         return False, f"Falha no login: {error_message}"
     except Exception as e:
         # Pega o erro de certificado se ele acontecer antes do httpx
         if "Invalid certificate argument" in str(e) or "ERRO DE CONFIGURAÇÃO CRÍTICO" in str(e):
             return False, f'Erro de Configuração do Servidor. Verifique os "Secrets" no Streamlit Cloud (Ação 1).'
+        
+        log_audit(action="login_failed", details={"email": email, "error": str(e)})
         return False, f"Falha no login: {e}"
 
 def logout():
     """Limpa o session_state para deslogar o usuário."""
+    # --- MELHORIA: Log de Auditoria ---
+    log_audit(action="logout")
+    # ------------------------------------
+    
     if "authenticated" in st.session_state:
         del st.session_state.authenticated
     if "user_uid" in st.session_state:
