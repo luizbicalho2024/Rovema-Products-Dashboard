@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from utils.firebase_config import get_db
-from utils.logger import log_audit  # <-- Importa a nova função de log
+from utils.logger import log_audit  # Importa a nova função de log
 import httpx # Para chamadas de API
 from datetime import datetime
 
@@ -80,7 +80,7 @@ def batch_write_to_firestore(records):
     batch = db.batch()
     count = 0
     total_written = 0
-    total_orphans = 0 # <-- MELHORIA: Contagem de órfãs
+    total_orphans = 0 # Contagem de órfãs
     
     progress_bar = st.progress(0, text="Salvando dados no banco...")
     
@@ -89,10 +89,8 @@ def batch_write_to_firestore(records):
         batch.set(doc_ref, data) # .set() faz o "upsert" (cria ou sobrescreve)
         count += 1
         
-        # --- MELHORIA: Contagem de órfãs ---
         if data.get("consultant_uid") is None:
             total_orphans += 1
-        # ------------------------------------
         
         if count == 499: # Limite do batch é 500
             batch.commit()
@@ -110,12 +108,19 @@ def batch_write_to_firestore(records):
     # Invalida o cache do mapa de clientes
     st.cache_data.clear()
 
-    return total_written, total_orphans # <-- MELHORIA: Retorna contagem de órfãs
+    return total_written, total_orphans # Retorna contagem de órfãs
 
 def process_bionio_csv(uploaded_file):
     """Processa o CSV Bionio."""
     try:
-        df = pd.read_csv(uploaded_file, sep=';', dtype={'CNPJ da organização': str})
+        # --- CORREÇÃO APLICADA AQUI ---
+        df = pd.read_csv(
+            uploaded_file, 
+            sep=';', 
+            dtype={'CNPJ da organização': str}, 
+            encoding='latin-1'
+        )
+        # -----------------------------
     except Exception as e:
         st.error(f"Erro ao ler o CSV: {e}")
         return
@@ -128,7 +133,7 @@ def process_bionio_csv(uploaded_file):
     
     if df_paid.empty:
         st.warning("Nenhum registro de venda válida encontrado no arquivo.")
-        return
+        return 0, 0 # Retorna zero para não dar erro na página admin
 
     records_to_write = {}
     
@@ -171,7 +176,6 @@ def process_bionio_csv(uploaded_file):
     # 6. Salva no Firestore
     total_saved, total_orphans = batch_write_to_firestore(records_to_write)
     
-    # --- MELHORIA: Log de Auditoria ---
     log_audit(
         action="upload_csv",
         details={
@@ -182,15 +186,20 @@ def process_bionio_csv(uploaded_file):
             "rows_orphaned": total_orphans
         }
     )
-    # ------------------------------------
     
     return total_saved, total_orphans
 
 def process_rovema_csv(uploaded_file):
     """Processa o CSV Rovema Pay."""
     try:
-        # dtype=str é crucial para CNPJ e outros campos
-        df = pd.read_csv(uploaded_file, sep=';', dtype=str)
+        # --- CORREÇÃO APLICADA AQUI ---
+        df = pd.read_csv(
+            uploaded_file, 
+            sep=';', 
+            dtype=str, 
+            encoding='latin-1'
+        )
+        # -----------------------------
     except Exception as e:
         st.error(f"Erro ao ler o CSV: {e}")
         return
@@ -203,7 +212,7 @@ def process_rovema_csv(uploaded_file):
 
     if df_paid.empty:
         st.warning("Nenhum registro de venda válida encontrado no arquivo.")
-        return
+        return 0, 0 # Retorna zero para não dar erro na página admin
 
     records_to_write = {}
     
@@ -247,7 +256,6 @@ def process_rovema_csv(uploaded_file):
     # 6. Salva no Firestore
     total_saved, total_orphans = batch_write_to_firestore(records_to_write)
     
-    # --- MELHORIA: Log de Auditoria ---
     log_audit(
         action="upload_csv",
         details={
@@ -258,7 +266,6 @@ def process_rovema_csv(uploaded_file):
             "rows_orphaned": total_orphans
         }
     )
-    # ------------------------------------
     
     return total_saved, total_orphans
 
@@ -271,16 +278,14 @@ async def process_asto_api(start_date, end_date):
         api_user = creds["asto_username"]
         api_pass = creds["asto_password"]
         
-        # --- MELHORIA: Regra de Negócio vinda dos Secrets ---
-        # Define 0.015 (1.5%) como padrão se não existir no secret
         asto_spread_rate = float(creds.get("asto_spread_rate", 0.015)) 
-        # ---------------------------------------------------
-
     except KeyError as e:
-        st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets no Streamlit Cloud.")
+        st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets.")
+        return
+    except Exception as e:
+        st.error(f"Erro ao ler Secrets da API: {e}")
         return
 
-    # Endpoint do Swagger, não o do secret.
     URL_ASTO = f"{BASE_URL}/api/AppFrota/Abastecimentos" 
     
     params = {
@@ -289,7 +294,6 @@ async def process_asto_api(start_date, end_date):
     }
     
     auth = (api_user, api_pass)
-    
     records_to_write = {}
     
     try:
@@ -301,17 +305,16 @@ async def process_asto_api(start_date, end_date):
         st.write(f"API ASTO: {len(data)} abastecimentos encontrados.")
         if not data:
             st.warning("Nenhum dado retornado pela API ASTO para o período.")
-            return
+            return 0, 0
 
         for sale in data:
             # 2. Limpeza e ETL
-            cnpj = clean_cnpj(sale['cnpjCliente'])
+            cnpj = clean_cnpj(sale.get('cnpjCliente'))
+            if not cnpj: continue # Pula se não tiver CNPJ
+
             data_venda = datetime.fromisoformat(sale['data'])
-            revenue_gross = float(sale['valor'])
-            
-            # --- MELHORIA: Usa a taxa do Secret ---
+            revenue_gross = float(sale.get('valor', 0))
             revenue_net = revenue_gross * asto_spread_rate 
-            # --------------------------------------
             
             # 3. Mapeamento
             consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
@@ -323,24 +326,23 @@ async def process_asto_api(start_date, end_date):
             unified_record = {
                 "source": "ASTO",
                 "client_cnpj": cnpj,
-                "client_name": sale['nomeCliente'],
+                "client_name": sale.get('nomeCliente', 'N/A'),
                 "consultant_uid": consultant_uid,
                 "manager_uid": manager_uid,
                 "date": data_venda,
                 "revenue_gross": revenue_gross,
                 "revenue_net": revenue_net,
-                "product_name": sale['nomeProduto'],
-                "product_detail": sale['nomeServico'],
+                "product_name": sale.get('nomeProduto', 'N/A'),
+                "product_detail": sale.get('nomeServico', 'N/A'),
                 "volume": float(sale.get('litros', 0)),
                 "status": "Confirmado", # Assumindo que a API só retorna confirmados
-                "raw_id": str(sale['id']),
+                "raw_id": str(sale.get('id', 'N/A')),
             }
             records_to_write[doc_id] = unified_record
             
         # 6. Salva no Firestore
         total_saved, total_orphans = batch_write_to_firestore(records_to_write)
         
-        # --- MELHORIA: Log de Auditoria ---
         log_audit(
             action="load_api",
             details={
@@ -352,7 +354,6 @@ async def process_asto_api(start_date, end_date):
                 "rows_orphaned": total_orphans
             }
         )
-        # ------------------------------------
         
         return total_saved, total_orphans
 
@@ -370,10 +371,12 @@ async def process_eliq_api(start_date, end_date):
         URL_ELIQ = creds["eliq_url"]
         api_token = creds["eliq_token"]
     except KeyError as e:
-        st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets no Streamlit Cloud.")
+        st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets.")
         return
-    
-    # Parâmetros para o endpoint 'transacoes-app'
+    except Exception as e:
+        st.error(f"Erro ao ler Secrets da API: {e}")
+        return
+
     params = {
         "data_inicio": start_date.strftime("%Y-%m-%d"),
         "data_fim": end_date.strftime("%Y-%m-%d"),
@@ -395,10 +398,10 @@ async def process_eliq_api(start_date, end_date):
         st.write(f"API ELIQ: {len(data)} transações encontradas.")
         if not data:
             st.warning("Nenhum dado retornado pela API ELIQ para o período.")
-            return
+            return 0, 0
 
         for sale in data:
-            if sale['status'] != 'confirmada':
+            if sale.get('status') != 'confirmada':
                 continue # Pula transações não confirmadas
 
             # 2. Limpeza e ETL
@@ -406,10 +409,12 @@ async def process_eliq_api(start_date, end_date):
             if not info or not info.get('cliente'):
                 continue
                 
-            cnpj = clean_cnpj(info['cliente']['cnpj'])
+            cnpj = clean_cnpj(info['cliente'].get('cnpj'))
+            if not cnpj: continue
+
             data_venda = datetime.strptime(sale['data_cadastro'], "%Y-%m-%d %H:%M:%S")
-            revenue_gross = clean_value(sale['valor_total'])
-            revenue_net = clean_value(sale['taxa_administrativa'])
+            revenue_gross = clean_value(sale.get('valor_total', 0))
+            revenue_net = clean_value(sale.get('taxa_administrativa', 0))
             
             # 3. Mapeamento
             consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
@@ -421,7 +426,7 @@ async def process_eliq_api(start_date, end_date):
             unified_record = {
                 "source": "ELIQ",
                 "client_cnpj": cnpj,
-                "client_name": info['cliente']['nome'],
+                "client_name": info['cliente'].get('nome', 'N/A'),
                 "consultant_uid": consultant_uid,
                 "manager_uid": manager_uid,
                 "date": data_venda,
@@ -431,14 +436,13 @@ async def process_eliq_api(start_date, end_date):
                 "product_detail": info.get('produto', {}).get('categoria', 'N/A'),
                 "volume": clean_value(sale.get('quantidade', 0)),
                 "status": sale['status'],
-                "raw_id": str(sale['id']),
+                "raw_id": str(sale.get('id', 'N/A')),
             }
             records_to_write[doc_id] = unified_record
             
         # 6. Salva no Firestore
         total_saved, total_orphans = batch_write_to_firestore(records_to_write)
         
-        # --- MELHORIA: Log de Auditoria ---
         log_audit(
             action="load_api",
             details={
@@ -450,7 +454,6 @@ async def process_eliq_api(start_date, end_date):
                 "rows_orphaned": total_orphans
             }
         )
-        # ------------------------------------
         
         return total_saved, total_orphans
 
