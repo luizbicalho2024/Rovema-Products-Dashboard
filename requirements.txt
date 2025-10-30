@@ -1,5 +1,8 @@
 streamlit
 pandas
-requests
 plotly
 firebase-admin
+pyrebase4
+requests
+httpx  # Para as APIs, alternativa moderna ao requests
+bcrypt # Para hashear senhas, embora o Firebase Auth cuide disso
