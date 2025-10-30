@@ -6,7 +6,7 @@ import os
 
 # Carrega as credenciais do Streamlit Secrets
 try:
-    creds_input = st.secrets["firebase_service_account"]
+    creds_dict = st.secrets["firebase_service_account"]
     firebase_config = st.secrets["firebase_web_config"]
 except KeyError as e:
     st.error(f"ERRO DE CONFIGURAÇÃO: Secret '{e.args[0]}' não encontrado.")
@@ -16,40 +16,22 @@ except KeyError as e:
 @st.cache_resource
 def init_firebase_admin():
     """
-    Inicializa o SDK Admin do Firebase de forma robusta,
-    corrigindo automaticamente erros de parsing do Streamlit Secrets.
+    Inicializa o SDK Admin do Firebase.
     """
     try:
         # Verifica se o app já foi inicializado
         firebase_admin.get_app()
     except ValueError:
-        creds_dict = None
-        
-        # --- TENTATIVA DE CORREÇÃO AUTOMÁTICA ---
-        if isinstance(creds_input, dict):
-            # Caso 1 (Ideal): O TOML foi lido corretamente como um dicionário.
-            creds_dict = creds_input
-        
-        elif isinstance(creds_input, str):
-            # Caso 2 (O Bug): O TOML foi lido incorretamente como uma string.
-            st.warning("Detectado erro de parsing nos Secrets. Tentando correção automática...")
-            try:
-                # Tenta converter a string (que se parece com um dict/json) para um dict
-                creds_dict = json.loads(creds_input)
-            except json.JSONDecodeError:
-                st.error("ERRO CRÍTICO DE SECRET: O secret [firebase_service_account] é uma string, mas não é um JSON válido.")
-                st.error("Isso é 100% um erro de copiar/colar no painel do Streamlit Cloud.")
-                st.error("Por favor, apague e cole o bloco TOML da minha resposta anterior (com a 'private_key' em linha única).")
-                st.stop()
-        
-        if not creds_dict:
-            st.error("ERRO CRÍTICO DE SECRET: Não foi possível carregar as credenciais do [firebase_service_account].")
+        # ERRO DE CONFIGURAÇÃO MAIS COMUM:
+        # Se creds_dict não for um dicionário, o Streamlit leu o TOML errado.
+        if not isinstance(creds_dict, dict):
+            st.error("ERRO DE CONFIGURAÇÃO CRÍTICO!")
+            st.error("Os 'Secrets' do [firebase_service_account] estão formatados como TEXTO, não como um DICIONÁRIO.")
+            st.error("SOLUÇÃO: Verifique o PASSO 1 da minha resposta (usar a chave privada em linha única).")
             st.stop()
-
-        # --- FIM DA CORREÇÃO AUTOMÁTICA ---
-        
+            
         try:
-            # Inicializa o app usando o DICIONÁRIO de credenciais (original ou corrigido)
+            # Inicializa o app usando o DICIONÁRIO de credenciais
             cred = credentials.Certificate(creds_dict)
             firebase_admin.initialize_app(cred)
 
