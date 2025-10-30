@@ -1,3 +1,4 @@
+# pages/99_⚙️_Administracao.py
 import streamlit as st
 from utils.auth import auth_guard, check_role
 from utils.firebase_config import get_db, get_admin_auth
@@ -47,7 +48,13 @@ def get_all_users_and_clients():
         
     return users_list, clients_list
 
-users, clients = get_all_users_and_clients()
+try:
+    users, clients = get_all_users_and_clients()
+except Exception as e:
+    st.error(f"Erro crítico ao conectar ao Firestore: {e}")
+    st.info("Verifique se as credenciais [firebase_service_account] estão corretas nos Secrets do Streamlit Cloud.")
+    st.stop()
+    
 
 # --- 3. Layout em Abas ---
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -103,7 +110,6 @@ with tab1:
                 
                 # Busca o gestor do consultor
                 try:
-                    consultant_user_record = admin_auth.get_user(selected_consultant_uid)
                     consultant_doc = db.collection("users").document(selected_consultant_uid).get()
                     manager_uid = consultant_doc.to_dict().get("manager_uid")
                 except Exception as e:
@@ -227,6 +233,10 @@ with tab3:
 # --- ABA 4: CARGA DE DADOS (API) ---
 with tab4:
     st.header("Carga de Dados via API")
+    st.info("""
+    As credenciais das APIs são lidas automaticamente dos Secrets do Streamlit Cloud.
+    Basta selecionar o período e carregar.
+    """)
     
     # Define o período para ambas as APIs
     st.subheader("Selecione o Período de Carga")
@@ -237,30 +247,23 @@ with tab4:
     st.divider()
 
     st.subheader("Produto: ASTO (Logpay)")
-    st.markdown("Autenticação: `Username` e `Password`")
-    asto_user = st.text_input("ASTO Username", key="asto_user")
-    asto_pass = st.text_input("ASTO Password", type="password", key="asto_pass")
+    st.markdown(f"Usando usuário: `{st.secrets.get('api_credentials', {}).get('asto_username', 'N/A')}`")
     
     if st.button("Carregar Dados ASTO"):
-        if not asto_user or not asto_pass:
-            st.error("Preencha o usuário e senha da API ASTO.")
-        else:
-            with st.spinner("Buscando dados na API ASTO..."):
-                total = asyncio.run(process_asto_api(api_start_date, api_end_date, asto_user, asto_pass))
-                if total:
-                    st.success(f"Carga ASTO concluída! {total} registros salvos.")
+        with st.spinner("Buscando dados na API ASTO..."):
+            # A função agora lê os secrets internamente
+            total = asyncio.run(process_asto_api(api_start_date, api_end_date))
+            if total:
+                st.success(f"Carga ASTO concluída! {total} registros salvos.")
                     
     st.divider()
     
     st.subheader("Produto: ELIQ (Uzzipay)")
-    st.markdown("Autenticação: `Token`")
-    eliq_token = st.text_input("ELIQ Bearer Token", type="password", key="eliq_token")
+    st.markdown(f"Usando URL: `{st.secrets.get('api_credentials', {}).get('eliq_url', 'N/A')}`")
 
     if st.button("Carregar Dados ELIQ"):
-        if not eliq_token:
-            st.error("Preencha o Token da API ELIQ.")
-        else:
-            with st.spinner("Buscando dados na API ELIQ..."):
-                total = asyncio.run(process_eliq_api(api_start_date, api_end_date, eliq_token))
-                if total:
-                    st.success(f"Carga ELIQ concluída! {total} registros salvos.")
+        with st.spinner("Buscando dados na API ELIQ..."):
+            # A função agora lê os secrets internamente
+            total = asyncio.run(process_eliq_api(api_start_date, api_end_date))
+            if total:
+                st.success(f"Carga ELIQ concluída! {total} registros salvos.")
