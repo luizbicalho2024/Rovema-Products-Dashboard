@@ -1,9 +1,15 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import sys
+import os
+from datetime import datetime, timedelta
+
+# CORREÇÃO PARA 'KeyError: utils': Adiciona o diretório raiz ao path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from utils.auth import auth_guard
 from utils.firebase_config import get_db
-from datetime import datetime, timedelta
 
 # --- 1. Proteção da Página ---
 auth_guard()
