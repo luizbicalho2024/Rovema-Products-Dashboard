@@ -1,4 +1,3 @@
-# pages/0_temp_admin_creator.py
 import streamlit as st
 from utils.firebase_config import get_admin_auth, get_db
 
