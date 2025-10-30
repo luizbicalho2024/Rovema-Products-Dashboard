@@ -1,4 +1,13 @@
 import streamlit as st
+import pandas as pd
+import sys
+import os
+from datetime import datetime
+import asyncio 
+
+# CORREÇÃO PARA 'KeyError: utils': Adiciona o diretório raiz ao path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from utils.auth import auth_guard, check_role
 from utils.firebase_config import get_db, get_admin_auth
 from utils.data_processing import (
@@ -7,8 +16,6 @@ from utils.data_processing import (
     process_asto_api,
     process_eliq_api
 )
-from datetime import datetime
-import asyncio 
 
 # --- 1. Proteção da Página ---
 auth_guard()
