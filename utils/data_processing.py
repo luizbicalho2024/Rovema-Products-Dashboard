@@ -4,6 +4,7 @@ from utils.firebase_config import get_db
 from utils.logger import log_audit  # Importa a nova função de log
 import httpx # Para chamadas de API
 from datetime import datetime
+import urllib.parse # <-- Importado para depuração
 
 # --- FUNÇÕES DE LIMPEZA (ETL) ---
 
@@ -267,6 +268,11 @@ def process_rovema_csv(uploaded_file):
 
 async def process_asto_api(start_date, end_date):
     """Processa a API ASTO (Logpay)."""
+    
+    # --- MELHORIA: Variável de diagnóstico ---
+    full_url_for_log = "https://revistacasaejardim.globo.com/arquitetura/noticia/2025/02/como-o-mundo-teria-sido-23-projetos-arquitetonicos-que-nunca-foram-construidos.ghtml"
+    # ----------------------------------------
+    
     try:
         creds = st.secrets["api_credentials"]
         
@@ -287,15 +293,18 @@ async def process_asto_api(start_date, end_date):
     params = {
         "dataInicial": start_date.strftime("%Y-%m-%d"),
         "dataFinal": end_date.strftime("%Y-%m-%d"),
-        # --- CORREÇÃO APLICADA AQUI (baseado no Swagger) ---
         "api-version": "1.0"
-        # ----------------------------------------------------
     }
     
     auth = (api_user, api_pass)
     records_to_write = {}
     
     try:
+        # --- MELHORIA: Log de diagnóstico ---
+        full_url_for_log = f"{URL_ASTO}?{urllib.parse.urlencode(params)}"
+        st.info(f"Tentando chamar a API ASTO no endpoint: {full_url_for_log}")
+        # ------------------------------------
+        
         async with httpx.AsyncClient(auth=auth, timeout=30.0) as client:
             response = await client.get(URL_ASTO, params=params)
             response.raise_for_status() # Lança erro se a API falhar
@@ -357,8 +366,11 @@ async def process_asto_api(start_date, end_date):
         return total_saved, total_orphans
 
     except httpx.HTTPStatusError as e:
+        # --- MELHORIA: Log de diagnóstico ---
         st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}")
+        st.error(f"O URL completo que falhou foi: {full_url_for_log}")
         st.error(f"Verifique se o 'asto_url' nos seus Secrets está 100% correto.")
+        # ------------------------------------
     except Exception as e:
         st.error(f"Erro ao processar dados ASTO: {e}")
 
