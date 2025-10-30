@@ -65,8 +65,8 @@ def login_user(email, password):
         return False, f"Falha no login: {error_message}"
     except Exception as e:
         # Pega o erro de certificado se ele acontecer antes do httpx
-        if "Invalid certificate argument" in str(e) or "ERRO CRÍTICO DE SECRET" in str(e):
-            return False, f'Erro de Configuração do Servidor. Verifique os "Secrets" no Streamlit Cloud.'
+        if "Invalid certificate argument" in str(e) or "ERRO DE CONFIGURAÇÃO CRÍTICO" in str(e):
+            return False, f'Erro de Configuração do Servidor. Verifique os "Secrets" no Streamlit Cloud (Ação 1).'
         return False, f"Falha no login: {e}"
 
 def logout():
