@@ -1,3 +1,4 @@
+# utils/data_processing.py
 import streamlit as st
 import pandas as pd
 from utils.firebase_config import get_db
@@ -100,9 +101,8 @@ def batch_write_to_firestore(records):
         
     progress_bar.progress(1.0, text=f"Concluído! {total_written} registros salvos.")
     
-    # Invalida o cache do mapa de clientes se novos clientes foram adicionados
-    # (assumindo que novos clientes podem ter sido adicionados durante o processo)
-    # st.cache_data.clear() # Descomente se a lógica de adicionar clientes for implementada aqui
+    # Invalida o cache do mapa de clientes
+    st.cache_data.clear()
 
     return total_written
 
@@ -201,7 +201,7 @@ def process_rovema_csv(uploaded_file):
         # Métrica de receita: Assumindo que "Spread" é a nossa receita
         revenue_net = clean_value(row['Spread']) 
         
-        # 3. Mapeamento (Ignorando a coluna 'REPRESENTANTE' e usando nosso mapa)
+        # 3. Mapeamento
         consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
         
         # 4. Gera ID único
@@ -228,9 +228,20 @@ def process_rovema_csv(uploaded_file):
     total_saved = batch_write_to_firestore(records_to_write)
     return total_saved
 
-async def process_asto_api(start_date, end_date, api_user, api_pass):
+async def process_asto_api(start_date, end_date):
     """Processa a API ASTO (Logpay)."""
-    URL_ASTO = "https://SEU_DOMINIO_ASTO.com/api/AppFrota/Abastecimentos"
+    # Lê as credenciais dos Secrets
+    try:
+        creds = st.secrets["api_credentials"]
+        BASE_URL = creds["asto_base_url"]
+        api_user = creds["asto_username"]
+        api_pass = creds["asto_password"]
+    except KeyError as e:
+        st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets no Streamlit Cloud.")
+        return
+
+    # Endpoint do Swagger, não o do secret.
+    URL_ASTO = f"{BASE_URL}/api/AppFrota/Abastecimentos" 
     
     params = {
         "dataInicial": start_date.strftime("%Y-%m-%d"),
@@ -258,7 +269,6 @@ async def process_asto_api(start_date, end_date, api_user, api_pass):
             data_venda = datetime.fromisoformat(sale['data'])
             revenue_gross = float(sale['valor'])
             # Estratégia: Calcular 1.5% de spread (conforme discutido)
-            # Idealmente, esta taxa viria de um st.number_input
             revenue_net = revenue_gross * 0.015 
             
             # 3. Mapeamento
@@ -290,20 +300,26 @@ async def process_asto_api(start_date, end_date, api_user, api_pass):
         return total_saved
 
     except httpx.HTTPStatusError as e:
-        st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}")
+        st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}. Verifique se a 'asto_base_url' está correta.")
     except Exception as e:
         st.error(f"Erro ao processar dados ASTO: {e}")
 
 
-async def process_eliq_api(start_date, end_date, api_token):
+async def process_eliq_api(start_date, end_date):
     """Processa a API ELIQ (Uzzipay)."""
-    URL_ELIQ = "https://sigyo.uzzipay.com/api/transacoes"
+    # Lê as credenciais dos Secrets
+    try:
+        creds = st.secrets["api_credentials"]
+        URL_ELIQ = creds["eliq_url"]
+        api_token = creds["eliq_token"]
+    except KeyError as e:
+        st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets no Streamlit Cloud.")
+        return
     
-    # Formato de data: 01/07/2024 - 31/07/2024
-    date_range_str = f"{start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}"
-    
+    # Parâmetros para o endpoint 'transacoes-app'
     params = {
-        "TransacaoSearch[data_cadastro]": date_range_str,
+        "data_inicio": start_date.strftime("%Y-%m-%d"),
+        "data_fim": end_date.strftime("%Y-%m-%d"),
         "expand": "informacao.cliente,informacao.produto,informacao.credenciado"
     }
     
