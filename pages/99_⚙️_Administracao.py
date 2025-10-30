@@ -1,4 +1,3 @@
-# pages/99_⚙️_Administracao.py
 import streamlit as st
 from utils.auth import auth_guard, check_role
 from utils.firebase_config import get_db, get_admin_auth
@@ -52,7 +51,7 @@ try:
     users, clients = get_all_users_and_clients()
 except Exception as e:
     st.error(f"Erro crítico ao conectar ao Firestore: {e}")
-    st.info("Verifique se as credenciais [firebase_service_account] estão corretas nos Secrets do Streamlit Cloud.")
+    st.info("Verifique se as credenciais [firebase_service_account] estão corretas nos Secrets do Streamlit Cloud (ver Passo 1 da minha resposta).")
     st.stop()
     
 
@@ -265,5 +264,5 @@ with tab4:
         with st.spinner("Buscando dados na API ELIQ..."):
             # A função agora lê os secrets internamente
             total = asyncio.run(process_eliq_api(api_start_date, api_end_date))
-            if total:
-                st.success(f"Carga ELIQ concluída! {total} registros salvos.")
+                if total:
+                    st.success(f"Carga ELIQ concluída! {total} registros salvos.")
