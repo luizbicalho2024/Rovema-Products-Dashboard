@@ -1,5 +1,6 @@
 import streamlit as st
-from utils.firebase_config import get_db
+# CORREÇÃO: Importa o get_auth_client
+from utils.firebase_config import get_db, get_auth_client
 import time
 import httpx 
 
@@ -9,7 +10,7 @@ def login_user(email, password):
     """
     try:
         # Pega a API Key da configuração web (necessária para a API REST)
-        api_key = st.secrets["firebase_web_config"]["apiKey"]
+        api_key = st.secrets["firebase_config"]["apiKey"]
         
         # URL da API REST para login com e-mail/senha
         auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
