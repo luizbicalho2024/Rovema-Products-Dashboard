@@ -51,7 +51,7 @@ try:
     users, clients = get_all_users_and_clients()
 except Exception as e:
     st.error(f"Erro crítico ao conectar ao Firestore: {e}")
-    st.info("Verifique se as credenciais [firebase_service_account] estão corretas nos Secrets do Streamlit Cloud (ver Passo 1 da minha resposta).")
+    st.info("Verifique se as credenciais [firebase_service_account] estão corretas nos Secrets do Streamlit Cloud.")
     st.stop()
     
 
