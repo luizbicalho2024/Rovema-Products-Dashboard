@@ -1,4 +1,3 @@
-# utils/data_processing.py
 import streamlit as st
 import pandas as pd
 from utils.firebase_config import get_db
