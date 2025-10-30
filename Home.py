@@ -1,38 +1,41 @@
-# Home.py (ou main_app.py)
-
 import streamlit as st
-# ... (outras importações)
-import copy # Garanta que esta linha está presente para a cópia profunda
-from app import auth, ui_pages, db_utils
+from utils.auth import login_user
 
-# ... (Restante do código de roteamento) ...
+# --- Configuração da Página ---
+st.set_page_config(
+    page_title="BI Comercial - Login",
+    page_icon="logoRB.png",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
-# --- Configuração da Página Streamlit ---
-st.set_page_config(layout="wide", page_title="BI Estratégia Comercial Pro")
+# --- Lógica de Redirecionamento ---
+# Se o usuário já está logado, manda direto para o Dashboard
+if "authenticated" in st.session_state and st.session_state.authenticated:
+    st.switch_page("pages/1_📈_Dashboard_Geral.py")
 
-# --- Inicialização de Serviços ---
-db_client = db_utils.init_firebase()
+# --- Layout da Página de Login ---
+col1, col2, col3 = st.columns([1, 2, 1])
 
-if db_client:
-    # --- Roteamento da Aplicação Principal ---
-    
-    if not st.session_state.get('logged_in'):
-        # 1. Página de Login
-        auth.login_page(db_client)
-    else:
-        # 2. Menu de Navegação
-        
-        # Menu Lateral para Navegação
-        with st.sidebar:
-            st.write(f"Usuário: **{st.session_state.get('user_email')}**")
-            page = st.radio("Navegação", ["Dashboard (BI)", "Atualização de Dados", "Gestão de Equipe"])
-            st.markdown("---")
-            st.button("Sair", on_click=auth.logout)
+with col2:
+    st.image("logoRB.png", use_column_width=True)
+    st.title("BI Comercial")
+    st.markdown("Por favor, faça o login para continuar.")
 
-        # 3. Conteúdo da Página
-        if page == "Dashboard (BI)":
-            ui_pages.bi_dashboard_page(db_client)
-        elif page == "Atualização de Dados":
-            ui_pages.data_ingestion_page(db_client)
-        elif page == "Gestão de Equipe":
-            ui_pages.management_page(db_client)
+    with st.form(key="login_form"):
+        email = st.text_input("Email", placeholder="seu.email@empresa.com")
+        password = st.text_input("Senha", type="password", placeholder="********")
+        submit_button = st.form_submit_button("Entrar", use_container_width=True)
+
+        if submit_button:
+            if not email or not password:
+                st.error("Por favor, preencha todos os campos.")
+            else:
+                with st.spinner("Autenticando..."):
+                    success, message = login_user(email, password)
+                    if success:
+                        st.toast("Login bem-sucedido!", icon="🎉")
+                        # Redirecionamento após o login
+                        st.switch_page("pages/1_📈_Dashboard_Geral.py")
+                    else:
+                        st.error(f"Erro: {message}")
