@@ -270,11 +270,7 @@ async def process_asto_api(start_date, end_date):
     try:
         creds = st.secrets["api_credentials"]
         
-        # --- CORREÇÃO APLICADA AQUI ---
-        # Lê o URL completo, assim como a API ELIQ
         URL_ASTO = creds["asto_url"] 
-        # -----------------------------
-        
         api_user = creds["asto_username"]
         api_pass = creds["asto_password"]
         asto_spread_rate = float(creds.get("asto_spread_rate", 0.015)) 
@@ -290,7 +286,10 @@ async def process_asto_api(start_date, end_date):
     # Parâmetros de data
     params = {
         "dataInicial": start_date.strftime("%Y-%m-%d"),
-        "dataFinal": end_date.strftime("%Y-%m-%d")
+        "dataFinal": end_date.strftime("%Y-%m-%d"),
+        # --- CORREÇÃO APLICADA AQUI (baseado no Swagger) ---
+        "api-version": "1.0"
+        # ----------------------------------------------------
     }
     
     auth = (api_user, api_pass)
@@ -298,10 +297,7 @@ async def process_asto_api(start_date, end_date):
     
     try:
         async with httpx.AsyncClient(auth=auth, timeout=30.0) as client:
-            # --- CORREÇÃO APLICADA AQUI ---
-            # Chama o URL_ASTO (completo) lido dos secrets
             response = await client.get(URL_ASTO, params=params)
-            # -----------------------------
             response.raise_for_status() # Lança erro se a API falhar
             data = response.json()
 
