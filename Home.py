@@ -10,7 +10,6 @@ st.set_page_config(
 )
 
 # --- Lógica de Redirecionamento ---
-# Se o usuário já está logado, manda direto para o Dashboard
 if "authenticated" in st.session_state and st.session_state.authenticated:
     st.switch_page("pages/1_📈_Dashboard_Geral.py")
 
@@ -18,8 +17,8 @@ if "authenticated" in st.session_state and st.session_state.authenticated:
 col1, col2, col3 = st.columns([1, 2, 1])
 
 with col2:
-    # Correção aqui:
-    st.image("logoRB.png", use_container_width=True)
+    # CORREÇÃO PARA O LOGO:
+    st.image("logoRB.png", use_column_width='always')
     
     st.title("BI Comercial")
     st.markdown("Por favor, faça o login para continuar.")
@@ -27,7 +26,9 @@ with col2:
     with st.form(key="login_form"):
         email = st.text_input("Email", placeholder="seu.email@empresa.com")
         password = st.text_input("Senha", type="password", placeholder="********")
-        submit_button = st.form_submit_button("Entrar", use_container_width=True)
+        
+        # CORREÇÃO PARA O BOTÃO:
+        submit_button = st.form_submit_button("Entrar", width='stretch')
 
         if submit_button:
             if not email or not password:
@@ -37,7 +38,6 @@ with col2:
                     success, message = login_user(email, password)
                     if success:
                         st.toast("Login bem-sucedido!", icon="🎉")
-                        # Redirecionamento após o login
                         st.switch_page("pages/1_📈_Dashboard_Geral.py")
                     else:
                         st.error(f"Erro: {message}")
