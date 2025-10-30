@@ -1,0 +1,372 @@
+import streamlit as st
+import pandas as pd
+from utils.firebase_config import get_db
+import httpx # Para chamadas de API
+from datetime import datetime
+
+# --- FUNÇÕES DE LIMPEZA (ETL) ---
+
+def clean_value(value_str):
+    """Limpa valores monetários em string (formato BR)."""
+    if pd.isna(value_str):
+        return 0.0
+    if isinstance(value_str, (int, float)):
+        return float(value_str)
+    
+    value_str = str(value_str).strip()
+    value_str = value_str.replace("R$", "").replace("%", "")
+    value_str = value_str.replace(".", "").replace(",", ".") # Converte 1.000,00 para 1000.00
+    try:
+        return float(value_str)
+    except ValueError:
+        return 0.0
+
+def clean_cnpj(cnpj_str):
+    """Limpa e padroniza CNPJs."""
+    if pd.isna(cnpj_str):
+        return None
+    
+    cnpj_str = str(cnpj_str)
+    
+    # Remove cotações (ex: "3,96829E+12")
+    if 'E' in cnpj_str.upper():
+        try:
+            cnpj_str = "{:.0f}".format(float(cnpj_str.replace(',', '.')))
+        except:
+            pass # Deixa seguir para a limpeza padrão
+
+    # Remove caracteres não numéricos
+    cleaned_cnpj = "".join(filter(str.isdigit, cnpj_str))
+    return cleaned_cnpj.zfill(14) # Garante que tem 14 dígitos
+
+
+# --- MAPPER DE CARTEIRA (O CORAÇÃO DO SISTEMA) ---
+
+@st.cache_data(ttl=600) # Cache de 10 minutos para o mapa de clientes
+def get_client_portfolio_map():
+    """
+    Busca no Firestore e cria um dicionário (mapa) de:
+    { "cnpj_limpo": {"consultant_uid": "...", "manager_uid": "..."} }
+    Esta é a função mais importante para performance.
+    """
+    db = get_db()
+    clients_ref = db.collection("clients").stream()
+    client_map = {}
+    for client in clients_ref:
+        data = client.to_dict()
+        cnpj = client.id # O ID do documento é o CNPJ limpo
+        client_map[cnpj] = {
+            "consultant_uid": data.get("consultant_uid"),
+            "manager_uid": data.get("manager_uid")
+        }
+    return client_map
+
+def map_sale_to_consultant(cnpj):
+    """Mapeia uma venda (via CNPJ) ao consultor/gestor."""
+    client_map = get_client_portfolio_map() # Usa o mapa em cache
+    cnpj_limpo = clean_cnpj(cnpj)
+    
+    if cnpj_limpo in client_map:
+        return client_map[cnpj_limpo]["consultant_uid"], client_map[cnpj_limpo]["manager_uid"]
+    else:
+        return None, None # Venda "Órfã"
+
+# --- FUNÇÕES DE CARGA (POR PRODUTO) ---
+
+def batch_write_to_firestore(records):
+    """Escreve os registros em lotes no Firestore."""
+    db = get_db()
+    batch = db.batch()
+    count = 0
+    total_written = 0
+    
+    progress_bar = st.progress(0, text="Salvando dados no banco...")
+    
+    for i, (doc_id, data) in enumerate(records.items()):
+        doc_ref = db.collection("sales_data").document(doc_id)
+        batch.set(doc_ref, data) # .set() faz o "upsert" (cria ou sobrescreve)
+        count += 1
+        
+        if count == 499: # Limite do batch é 500
+            batch.commit()
+            total_written += count
+            batch = db.batch() # Novo batch
+            count = 0
+            progress_bar.progress(i / len(records), text=f"Salvando dados... ({total_written} registros)")
+            
+    if count > 0:
+        batch.commit() # Salva o lote final
+        total_written += count
+        
+    progress_bar.progress(1.0, text=f"Concluído! {total_written} registros salvos.")
+    
+    # Invalida o cache do mapa de clientes se novos clientes foram adicionados
+    # (assumindo que novos clientes podem ter sido adicionados durante o processo)
+    # st.cache_data.clear() # Descomente se a lógica de adicionar clientes for implementada aqui
+
+    return total_written
+
+def process_bionio_csv(uploaded_file):
+    """Processa o CSV Bionio."""
+    try:
+        df = pd.read_csv(uploaded_file, sep=';', dtype={'CNPJ da organização': str})
+    except Exception as e:
+        st.error(f"Erro ao ler o CSV: {e}")
+        return
+        
+    st.write(f"Arquivo Bionio lido: {len(df)} linhas encontradas.")
+    
+    # 1. Filtra apenas pedidos pagos/transferidos
+    df_paid = df[df['Status do pedido'].isin(['Transferido', 'Pago e Agendado'])].copy()
+    st.write(f"{len(df_paid)} registros de vendas válidas ('Transferido' ou 'Pago e Agendado').")
+    
+    if df_paid.empty:
+        st.warning("Nenhum registro de venda válida encontrado no arquivo.")
+        return
+
+    records_to_write = {}
+    
+    for _, row in df_paid.iterrows():
+        # 2. Limpeza e ETL
+        cnpj = clean_cnpj(row['CNPJ da organização'])
+        data_pagamento_str = row['Data do pagamento do pedido']
+        
+        try:
+            data_pagamento = datetime.strptime(data_pagamento_str, "%d/%m/%Y")
+        except:
+            continue # Pula se a data do pagamento for inválida
+
+        revenue = clean_value(row['Valor total do pedido'])
+        
+        # 3. Mapeamento
+        consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
+        
+        # 4. Gera ID único (Evita duplicidade)
+        # Bionio_NumeroPedido_DataPagamento
+        doc_id = f"BIONIO_{row['Número do pedido']}_{data_pagamento_str.replace('/', '-')}"
+        
+        # 5. Monta o registro unificado
+        unified_record = {
+            "source": "Bionio",
+            "client_cnpj": cnpj,
+            "client_name": row['Nome fantasia'],
+            "consultant_uid": consultant_uid,
+            "manager_uid": manager_uid,
+            "date": data_pagamento, # Timestamp
+            "revenue_gross": revenue,
+            "revenue_net": revenue, # Bionio não tem spread, usamos o valor total
+            "product_name": row['Nome do benefício'],
+            "status": row['Status do pedido'],
+            "payment_type": row['Tipo de pagamento'],
+            "raw_id": str(row['Número do pedido']),
+        }
+        records_to_write[doc_id] = unified_record
+        
+    # 6. Salva no Firestore
+    total_saved = batch_write_to_firestore(records_to_write)
+    return total_saved
+
+def process_rovema_csv(uploaded_file):
+    """Processa o CSV Rovema Pay."""
+    try:
+        # dtype=str é crucial para CNPJ e outros campos
+        df = pd.read_csv(uploaded_file, sep=';', dtype=str)
+    except Exception as e:
+        st.error(f"Erro ao ler o CSV: {e}")
+        return
+
+    st.write(f"Arquivo Rovema Pay lido: {len(df)} linhas encontradas.")
+    
+    # 1. Filtra apenas transações pagas
+    df_paid = df[df['Status'].isin(['Pago', 'Antecipado'])].copy()
+    st.write(f"{len(df_paid)} registros de vendas válidas ('Pago' ou 'Antecipado').")
+
+    if df_paid.empty:
+        st.warning("Nenhum registro de venda válida encontrado no arquivo.")
+        return
+
+    records_to_write = {}
+    
+    for _, row in df_paid.iterrows():
+        # 2. Limpeza e ETL
+        cnpj = clean_cnpj(row['CNPJ'])
+        data_venda_str = row['Venda'] # Ex: 01/09/2025 07:01:16
+        
+        try:
+            data_venda = datetime.strptime(data_venda_str, "%d/%m/%Y %H:%M:%S")
+        except:
+            continue # Pula se a data for inválida
+
+        revenue_gross = clean_value(row['Bruto'])
+        # Métrica de receita: Assumindo que "Spread" é a nossa receita
+        revenue_net = clean_value(row['Spread']) 
+        
+        # 3. Mapeamento (Ignorando a coluna 'REPRESENTANTE' e usando nosso mapa)
+        consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
+        
+        # 4. Gera ID único
+        doc_id = f"ROVEMA_{row['ID Venda']}_{row['ID Parcela']}"
+        
+        # 5. Monta o registro unificado
+        unified_record = {
+            "source": "Rovema Pay",
+            "client_cnpj": cnpj,
+            "client_name": row['EC'],
+            "consultant_uid": consultant_uid,
+            "manager_uid": manager_uid,
+            "date": data_venda, # Timestamp
+            "revenue_gross": revenue_gross,
+            "revenue_net": revenue_net, # Receita da empresa
+            "product_name": row['Tipo'], # Débito / Crédito
+            "product_detail": row['Bandeira'], # mastercard, visa
+            "status": row['Status'],
+            "raw_id": f"{row['ID Venda']}-{row['ID Parcela']}",
+        }
+        records_to_write[doc_id] = unified_record
+        
+    # 6. Salva no Firestore
+    total_saved = batch_write_to_firestore(records_to_write)
+    return total_saved
+
+async def process_asto_api(start_date, end_date, api_user, api_pass):
+    """Processa a API ASTO (Logpay)."""
+    URL_ASTO = "https://SEU_DOMINIO_ASTO.com/api/AppFrota/Abastecimentos"
+    
+    params = {
+        "dataInicial": start_date.strftime("%Y-%m-%d"),
+        "dataFinal": end_date.strftime("%Y-%m-%d")
+    }
+    
+    auth = (api_user, api_pass)
+    
+    records_to_write = {}
+    
+    try:
+        async with httpx.AsyncClient(auth=auth, timeout=30.0) as client:
+            response = await client.get(URL_ASTO, params=params)
+            response.raise_for_status() # Lança erro se a API falhar
+            data = response.json()
+
+        st.write(f"API ASTO: {len(data)} abastecimentos encontrados.")
+        if not data:
+            st.warning("Nenhum dado retornado pela API ASTO para o período.")
+            return
+
+        for sale in data:
+            # 2. Limpeza e ETL
+            cnpj = clean_cnpj(sale['cnpjCliente'])
+            data_venda = datetime.fromisoformat(sale['data'])
+            revenue_gross = float(sale['valor'])
+            # Estratégia: Calcular 1.5% de spread (conforme discutido)
+            # Idealmente, esta taxa viria de um st.number_input
+            revenue_net = revenue_gross * 0.015 
+            
+            # 3. Mapeamento
+            consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
+            
+            # 4. Gera ID único
+            doc_id = f"ASTO_{sale['id']}" # Assumindo que 'id' é o ID do abastecimento
+            
+            # 5. Monta o registro unificado
+            unified_record = {
+                "source": "ASTO",
+                "client_cnpj": cnpj,
+                "client_name": sale['nomeCliente'],
+                "consultant_uid": consultant_uid,
+                "manager_uid": manager_uid,
+                "date": data_venda,
+                "revenue_gross": revenue_gross,
+                "revenue_net": revenue_net,
+                "product_name": sale['nomeProduto'],
+                "product_detail": sale['nomeServico'],
+                "volume": float(sale.get('litros', 0)),
+                "status": "Confirmado", # Assumindo que a API só retorna confirmados
+                "raw_id": str(sale['id']),
+            }
+            records_to_write[doc_id] = unified_record
+            
+        # 6. Salva no Firestore
+        total_saved = batch_write_to_firestore(records_to_write)
+        return total_saved
+
+    except httpx.HTTPStatusError as e:
+        st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}")
+    except Exception as e:
+        st.error(f"Erro ao processar dados ASTO: {e}")
+
+
+async def process_eliq_api(start_date, end_date, api_token):
+    """Processa a API ELIQ (Uzzipay)."""
+    URL_ELIQ = "https://sigyo.uzzipay.com/api/transacoes"
+    
+    # Formato de data: 01/07/2024 - 31/07/2024
+    date_range_str = f"{start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}"
+    
+    params = {
+        "TransacaoSearch[data_cadastro]": date_range_str,
+        "expand": "informacao.cliente,informacao.produto,informacao.credenciado"
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {api_token}"
+    }
+    
+    records_to_write = {}
+
+    try:
+        async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+            response = await client.get(URL_ELIQ, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+        st.write(f"API ELIQ: {len(data)} transações encontradas.")
+        if not data:
+            st.warning("Nenhum dado retornado pela API ELIQ para o período.")
+            return
+
+        for sale in data:
+            if sale['status'] != 'confirmada':
+                continue # Pula transações não confirmadas
+
+            # 2. Limpeza e ETL
+            info = sale.get('informacao', {})
+            if not info or not info.get('cliente'):
+                continue
+                
+            cnpj = clean_cnpj(info['cliente']['cnpj'])
+            data_venda = datetime.strptime(sale['data_cadastro'], "%Y-%m-%d %H:%M:%S")
+            revenue_gross = clean_value(sale['valor_total'])
+            revenue_net = clean_value(sale['taxa_administrativa'])
+            
+            # 3. Mapeamento
+            consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
+            
+            # 4. Gera ID único
+            doc_id = f"ELIQ_{sale['id']}"
+            
+            # 5. Monta o registro unificado
+            unified_record = {
+                "source": "ELIQ",
+                "client_cnpj": cnpj,
+                "client_name": info['cliente']['nome'],
+                "consultant_uid": consultant_uid,
+                "manager_uid": manager_uid,
+                "date": data_venda,
+                "revenue_gross": revenue_gross,
+                "revenue_net": revenue_net, # ELIQ tem o spread!
+                "product_name": info.get('produto', {}).get('nome', 'N/A'),
+                "product_detail": info.get('produto', {}).get('categoria', 'N/A'),
+                "volume": clean_value(sale.get('quantidade', 0)),
+                "status": sale['status'],
+                "raw_id": str(sale['id']),
+            }
+            records_to_write[doc_id] = unified_record
+            
+        # 6. Salva no Firestore
+        total_saved = batch_write_to_firestore(records_to_write)
+        return total_saved
+
+    except httpx.HTTPStatusError as e:
+        st.error(f"Erro na API ELIQ: {e.response.status_code} - {e.response.text}")
+    except Exception as e:
+        st.error(f"Erro ao processar dados ELIQ: {e}")
