@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from utils.firebase_config import get_db
+from utils.logger import log_audit  # <-- Importa a nova função de log
 import httpx # Para chamadas de API
 from datetime import datetime
 
@@ -79,6 +80,7 @@ def batch_write_to_firestore(records):
     batch = db.batch()
     count = 0
     total_written = 0
+    total_orphans = 0 # <-- MELHORIA: Contagem de órfãs
     
     progress_bar = st.progress(0, text="Salvando dados no banco...")
     
@@ -86,6 +88,11 @@ def batch_write_to_firestore(records):
         doc_ref = db.collection("sales_data").document(doc_id)
         batch.set(doc_ref, data) # .set() faz o "upsert" (cria ou sobrescreve)
         count += 1
+        
+        # --- MELHORIA: Contagem de órfãs ---
+        if data.get("consultant_uid") is None:
+            total_orphans += 1
+        # ------------------------------------
         
         if count == 499: # Limite do batch é 500
             batch.commit()
@@ -103,7 +110,7 @@ def batch_write_to_firestore(records):
     # Invalida o cache do mapa de clientes
     st.cache_data.clear()
 
-    return total_written
+    return total_written, total_orphans # <-- MELHORIA: Retorna contagem de órfãs
 
 def process_bionio_csv(uploaded_file):
     """Processa o CSV Bionio."""
@@ -162,8 +169,22 @@ def process_bionio_csv(uploaded_file):
         records_to_write[doc_id] = unified_record
         
     # 6. Salva no Firestore
-    total_saved = batch_write_to_firestore(records_to_write)
-    return total_saved
+    total_saved, total_orphans = batch_write_to_firestore(records_to_write)
+    
+    # --- MELHORIA: Log de Auditoria ---
+    log_audit(
+        action="upload_csv",
+        details={
+            "product": "Bionio",
+            "rows_found": len(df),
+            "rows_processed": len(df_paid),
+            "rows_saved": total_saved,
+            "rows_orphaned": total_orphans
+        }
+    )
+    # ------------------------------------
+    
+    return total_saved, total_orphans
 
 def process_rovema_csv(uploaded_file):
     """Processa o CSV Rovema Pay."""
@@ -224,8 +245,22 @@ def process_rovema_csv(uploaded_file):
         records_to_write[doc_id] = unified_record
         
     # 6. Salva no Firestore
-    total_saved = batch_write_to_firestore(records_to_write)
-    return total_saved
+    total_saved, total_orphans = batch_write_to_firestore(records_to_write)
+    
+    # --- MELHORIA: Log de Auditoria ---
+    log_audit(
+        action="upload_csv",
+        details={
+            "product": "Rovema Pay",
+            "rows_found": len(df),
+            "rows_processed": len(df_paid),
+            "rows_saved": total_saved,
+            "rows_orphaned": total_orphans
+        }
+    )
+    # ------------------------------------
+    
+    return total_saved, total_orphans
 
 async def process_asto_api(start_date, end_date):
     """Processa a API ASTO (Logpay)."""
@@ -235,6 +270,12 @@ async def process_asto_api(start_date, end_date):
         BASE_URL = creds["asto_base_url"]
         api_user = creds["asto_username"]
         api_pass = creds["asto_password"]
+        
+        # --- MELHORIA: Regra de Negócio vinda dos Secrets ---
+        # Define 0.015 (1.5%) como padrão se não existir no secret
+        asto_spread_rate = float(creds.get("asto_spread_rate", 0.015)) 
+        # ---------------------------------------------------
+
     except KeyError as e:
         st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets no Streamlit Cloud.")
         return
@@ -267,8 +308,10 @@ async def process_asto_api(start_date, end_date):
             cnpj = clean_cnpj(sale['cnpjCliente'])
             data_venda = datetime.fromisoformat(sale['data'])
             revenue_gross = float(sale['valor'])
-            # Estratégia: Calcular 1.5% de spread (conforme discutido)
-            revenue_net = revenue_gross * 0.015 
+            
+            # --- MELHORIA: Usa a taxa do Secret ---
+            revenue_net = revenue_gross * asto_spread_rate 
+            # --------------------------------------
             
             # 3. Mapeamento
             consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
@@ -295,8 +338,23 @@ async def process_asto_api(start_date, end_date):
             records_to_write[doc_id] = unified_record
             
         # 6. Salva no Firestore
-        total_saved = batch_write_to_firestore(records_to_write)
-        return total_saved
+        total_saved, total_orphans = batch_write_to_firestore(records_to_write)
+        
+        # --- MELHORIA: Log de Auditoria ---
+        log_audit(
+            action="load_api",
+            details={
+                "product": "ASTO",
+                "start_date": start_date.strftime("%Y-%m-%d"),
+                "end_date": end_date.strftime("%Y-%m-%d"),
+                "rows_found": len(data),
+                "rows_saved": total_saved,
+                "rows_orphaned": total_orphans
+            }
+        )
+        # ------------------------------------
+        
+        return total_saved, total_orphans
 
     except httpx.HTTPStatusError as e:
         st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}. Verifique se a 'asto_base_url' está correta.")
@@ -378,8 +436,23 @@ async def process_eliq_api(start_date, end_date):
             records_to_write[doc_id] = unified_record
             
         # 6. Salva no Firestore
-        total_saved = batch_write_to_firestore(records_to_write)
-        return total_saved
+        total_saved, total_orphans = batch_write_to_firestore(records_to_write)
+        
+        # --- MELHORIA: Log de Auditoria ---
+        log_audit(
+            action="load_api",
+            details={
+                "product": "ELIQ",
+                "start_date": start_date.strftime("%Y-%m-%d"),
+                "end_date": end_date.strftime("%Y-%m-%d"),
+                "rows_found": len(data),
+                "rows_saved": total_saved,
+                "rows_orphaned": total_orphans
+            }
+        )
+        # ------------------------------------
+        
+        return total_saved, total_orphans
 
     except httpx.HTTPStatusError as e:
         st.error(f"Erro na API ELIQ: {e.response.status_code} - {e.response.text}")
