@@ -4,12 +4,14 @@ import sys
 import os
 from datetime import datetime
 import asyncio 
+import calendar
 
 # CORREÇÃO PARA 'KeyError: utils': Adiciona o diretório raiz ao path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.auth import auth_guard, check_role
 from utils.firebase_config import get_db, get_admin_auth
+from utils.logger import log_audit  # <-- Importa logger
 from utils.data_processing import (
     process_bionio_csv, 
     process_rovema_csv,
@@ -54,8 +56,20 @@ def get_all_users_and_clients():
         
     return users_list, clients_list
 
+@st.cache_data(ttl=300)
+def get_goals(month_id):
+    """Busca metas do mês (ex: '2025-10')"""
+    db = get_db()
+    goals_doc = db.collection("goals").document(month_id).get()
+    if goals_doc.exists:
+        return goals_doc.to_dict()
+    return {}
+
 try:
     users, clients = get_all_users_and_clients()
+    df_users = pd.DataFrame(users)
+    df_consultants = df_users[df_users['role'] == 'consultant'].copy()
+
 except Exception as e:
     st.error(f"Erro crítico ao conectar ao Firestore: {e}")
     st.info("Verifique se as credenciais [firebase_service_account] estão corretas nos Secrets do Streamlit Cloud.")
@@ -63,15 +77,16 @@ except Exception as e:
     
 
 # --- 3. Layout em Abas ---
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 Gestão de Clientes (Carteiras)",
+tab1, tab2, tab5, tab3, tab4 = st.tabs([
+    "📊 Gestão de Clientes",
     "👥 Gestão de Usuários",
+    "🎯 Gestão de Metas", # <-- NOVA ABA
     "📄 Carga de Dados (CSV)",
     "☁️ Carga de Dados (API)"
 ])
 
 
-# --- ABA 1: GESTÃO DE CLIENTES (Obrigatório para o sistema funcionar) ---
+# --- ABA 1: GESTÃO DE CLIENTES ---
 with tab1:
     st.header("Atribuir Clientes a Consultores")
     st.info("""
@@ -80,7 +95,7 @@ with tab1:
     """)
     
     # Listas para os filtros
-    consultant_dict = {u['uid']: f"{u['name']} ({u['email']})" for u in users if u['role'] == 'consultant'}
+    consultant_dict = {u['uid']: f"{u['name']} ({u['email']})" for _, u in df_consultants.iterrows()}
     client_dict = {c['cnpj']: c['name'] for c in clients}
 
     col1, col2 = st.columns(2)
@@ -88,7 +103,6 @@ with tab1:
     with col1:
         st.subheader("Atribuir/Atualizar Cliente")
         
-        # Filtro para encontrar clientes
         client_cnpj_list = ["Novo Cliente"] + [f"{name} ({cnpj})" for cnpj, name in client_dict.items()]
         selected_client_str = st.selectbox("Buscar Cliente por Nome", client_cnpj_list, index=0)
         
@@ -114,7 +128,6 @@ with tab1:
                 db = get_db()
                 admin_auth = get_admin_auth()
                 
-                # Busca o gestor do consultor
                 try:
                     consultant_doc = db.collection("users").document(selected_consultant_uid).get()
                     manager_uid = consultant_doc.to_dict().get("manager_uid")
@@ -129,22 +142,20 @@ with tab1:
                     "updated_at": datetime.now()
                 }
                 
-                # Salva no Firestore usando o CNPJ limpo como ID do documento
                 clean_cnpj_val = "".join(filter(str.isdigit, client_cnpj))
                 db.collection("clients").document(clean_cnpj_val).set(client_data, merge=True)
                 
+                log_audit("assign_client", {"client_cnpj": clean_cnpj_val, "consultant_uid": selected_consultant_uid})
                 st.success(f"Cliente '{client_name}' salvo e associado a {consultant_dict[selected_consultant_uid]}!")
-                st.cache_data.clear() # Limpa o cache para recarregar a lista
+                st.cache_data.clear()
                 st.rerun()
 
     with col2:
         st.subheader("Carteiras Atuais")
         clients_df = pd.DataFrame(clients)
-        # Mapeia UID para Nome para visualização
         consultant_name_map = {u['uid']: u['name'] for u in users}
         clients_df['consultant_name'] = clients_df['consultant_uid'].map(consultant_name_map).fillna("N/A")
-        # CORREÇÃO PARA O DATAFRAME:
-        st.dataframe(clients_df[['cnpj', 'name', 'consultant_name']], width='stretch')
+        st.dataframe(clients_df[['cnpj', 'name', 'consultant_name']], use_container_width=True)
 
 
 # --- ABA 2: GESTÃO DE USUÁRIOS ---
@@ -156,8 +167,7 @@ with tab2:
     with col1:
         st.subheader("Criar Novo Usuário")
         
-        # Lista de Gestores para atribuição
-        manager_dict = {u['uid']: u['name'] for u in users if u['role'] == 'manager'}
+        manager_dict = {u['uid']: u['name'] for _, u in df_users[df_users['role'] == 'manager'].iterrows()}
         
         with st.form("new_user_form", clear_on_submit=True):
             name = st.text_input("Nome Completo")
@@ -166,32 +176,33 @@ with tab2:
             role = st.selectbox("Nível de Acesso", ["consultant", "manager", "admin"])
             
             manager_uid = None
-            if role == "consultant":
+            if role == "consultant" and manager_dict:
                 manager_uid = st.selectbox(
                     "Gestor Responsável",
                     options=list(manager_dict.keys()),
                     format_func=lambda uid: manager_dict[uid]
                 )
+            elif role == "consultant":
+                st.warning("Crie um usuário 'manager' primeiro para poder associar.")
             
-            # CORREÇÃO PARA O BOTÃO:
-            submit_user = st.form_submit_button("Criar Usuário", width='stretch')
+            submit_user = st.form_submit_button("Criar Usuário", use_container_width=True)
             
             if submit_user:
                 if not name or not email or not password or not role:
                     st.error("Preencha todos os campos!")
+                elif role == "consultant" and not manager_uid:
+                     st.error("Consultores precisam de um gestor associado.")
                 else:
                     try:
                         admin_auth = get_admin_auth()
                         db = get_db()
                         
-                        # 1. Cria o usuário no Firebase Authentication
                         user_record = admin_auth.create_user(
                             email=email,
                             password=password,
                             display_name=name
                         )
                         
-                        # 2. Salva os dados (role, manager) no Firestore
                         user_data = {
                             "name": name,
                             "email": email,
@@ -200,19 +211,81 @@ with tab2:
                         }
                         db.collection("users").document(user_record.uid).set(user_data)
                         
+                        log_audit("create_user", {"new_user_email": email, "role": role})
                         st.success(f"Usuário '{name}' criado com sucesso (UID: {user_record.uid})!")
                         st.cache_data.clear()
-                        st.rerun()
                         
                     except Exception as e:
                         st.error(f"Erro ao criar usuário: {e}")
 
     with col2:
         st.subheader("Usuários Existentes")
-        users_df = pd.DataFrame(users)
-        # CORREÇÃO PARA O DATAFRAME:
-        st.dataframe(users_df, width='stretch')
+        st.dataframe(df_users, use_container_width=True)
 
+# --- ABA 5: GESTÃO DE METAS (NOVA) ---
+with tab5:
+    st.header("🎯 Gestão de Metas Mensais")
+    st.info("Defina as metas de Receita Líquida (R$) para os consultores.")
+    
+    # Seleção de Mês/Ano
+    today = datetime.now()
+    col1, col2 = st.columns(2)
+    selected_month = col1.selectbox(
+        "Mês da Meta", 
+        options=range(1, 13), 
+        format_func=lambda m: calendar.month_name[m],
+        index=today.month - 1
+    )
+    selected_year = col2.number_input("Ano da Meta", value=today.year, min_value=2024, max_value=2030)
+    
+    # ID do Documento no Firestore (ex: "2025-10")
+    month_id = f"{selected_year}-{selected_month:02d}"
+    
+    st.subheader(f"Definindo Metas para: {calendar.month_name[selected_month]} / {selected_year}")
+    
+    # Busca metas atuais
+    current_goals = get_goals(month_id)
+    
+    # Prepara o DataFrame para o data_editor
+    df_consultants['meta'] = df_consultants['uid'].map(lambda uid: current_goals.get(uid, 0.0))
+    
+    edited_goals_df = st.data_editor(
+        df_consultants[['name', 'email', 'meta', 'uid']],
+        column_config={
+            "uid": None, # Esconde UID
+            "name": st.column_config.TextColumn("Consultor", disabled=True),
+            "email": st.column_config.TextColumn("Email", disabled=True),
+            "meta": st.column_config.NumberColumn(
+                "Meta (R$)",
+                min_value=0.0,
+                format="R$ %.2f"
+            )
+        },
+        use_container_width=True
+    )
+    
+    if st.button("Salvar Metas", type="primary"):
+        # Transforma o DF editado em um dicionário {uid: meta}
+        goals_to_save = pd.Series(
+            edited_goals_df.meta.values, 
+            index=edited_goals_df.uid
+        ).to_dict()
+        
+        # Remove valores nulos/inválidos
+        goals_to_save = {uid: float(meta) for uid, meta in goals_to_save.items() if pd.notna(meta)}
+        
+        try:
+            db = get_db()
+            doc_ref = db.collection("goals").document(month_id)
+            doc_ref.set(goals_to_save) # .set() sobrescreve o documento com as novas metas
+            
+            log_audit("set_goals", {"month_id": month_id, "goals_count": len(goals_to_save)})
+            st.success(f"Metas de {month_id} salvas com sucesso!")
+            st.cache_data.clear() # Limpa cache para buscar metas atualizadas
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"Erro ao salvar metas: {e}")
 
 # --- ABA 3: CARGA DE DADOS (CSV) ---
 with tab3:
@@ -222,10 +295,13 @@ with tab3:
     uploaded_bionio = st.file_uploader("Selecione o arquivo Bionio.csv", type="csv", key="bionio_uploader")
     if uploaded_bionio:
         if st.button("Processar Bionio"):
-            with st.spinner("Processando Bionio... Isso pode levar alguns minutos."):
-                total = process_bionio_csv(uploaded_bionio)
-                if total:
-                    st.success(f"Processamento Bionio concluído! {total} registros salvos.")
+            with st.spinner("Processando Bionio..."):
+                total_saved, total_orphans = process_bionio_csv(uploaded_bionio)
+                if total_saved is not None:
+                    st.success(f"Processamento Bionio concluído! {total_saved} registros salvos.")
+                    if total_orphans > 0:
+                        st.warning(f"**{total_orphans} vendas órfãs** não foram atribuídas (CNPJ não encontrado).")
+                        st.info("Acesse a aba 'Vendas Órfãs' para corrigi-las.")
                     
     st.divider()
 
@@ -233,21 +309,19 @@ with tab3:
     uploaded_rovema = st.file_uploader("Selecione o arquivo RovemaPay.csv", type="csv", key="rovema_uploader")
     if uploaded_rovema:
         if st.button("Processar Rovema Pay"):
-            with st.spinner("Processando Rovema Pay... Isso pode levar alguns minutos."):
-                total = process_rovema_csv(uploaded_rovema)
-                if total:
-                    st.success(f"Processamento Rovema Pay concluído! {total} registros salvos.")
-
+            with st.spinner("Processando Rovema Pay..."):
+                total_saved, total_orphans = process_rovema_csv(uploaded_rovema)
+                if total_saved is not None:
+                    st.success(f"Processamento Rovema Pay concluído! {total_saved} registros salvos.")
+                    if total_orphans > 0:
+                        st.warning(f"**{total_orphans} vendas órfãs** não foram atribuídas (CNPJ não encontrado).")
+                        st.info("Acesse a aba 'Vendas Órfãs' para corrigi-las.")
 
 # --- ABA 4: CARGA DE DADOS (API) ---
 with tab4:
     st.header("Carga de Dados via API")
-    st.info("""
-    As credenciais das APIs são lidas automaticamente dos Secrets do Streamlit Cloud.
-    Basta selecionar o período e carregar.
-    """)
+    st.info("As credenciais das APIs são lidas automaticamente dos Secrets.")
     
-    # Define o período para ambas as APIs
     st.subheader("Selecione o Período de Carga")
     col1, col2 = st.columns(2)
     api_start_date = col1.date_input("Data Inicial", datetime.now().replace(day=1))
@@ -260,11 +334,12 @@ with tab4:
     
     if st.button("Carregar Dados ASTO"):
         with st.spinner("Buscando dados na API ASTO..."):
-            # A função agora lê os secrets internamente
-            total = asyncio.run(process_asto_api(api_start_date, api_end_date))
-            if total:
-                st.success(f"Carga ASTO concluída! {total} registros salvos.")
-                    
+            total_saved, total_orphans = asyncio.run(process_asto_api(api_start_date, api_end_date))
+            if total_saved is not None:
+                st.success(f"Carga ASTO concluída! {total_saved} registros salvos.")
+                if total_orphans > 0:
+                    st.warning(f"**{total_orphans} vendas órfãs** não foram atribuídas (CNPJ não encontrado).")
+
     st.divider()
     
     st.subheader("Produto: ELIQ (Uzzipay)")
@@ -272,7 +347,8 @@ with tab4:
 
     if st.button("Carregar Dados ELIQ"):
         with st.spinner("Buscando dados na API ELIQ..."):
-            # A função agora lê os secrets internamente
-            total = asyncio.run(process_eliq_api(api_start_date, api_end_date))
-            if total:
-                st.success(f"Carga ELIQ concluída! {total} registros salvos.")
+            total_saved, total_orphans = asyncio.run(process_eliq_api(api_start_date, api_end_date))
+            if total_saved is not None:
+                st.success(f"Carga ELIQ concluída! {total_saved} registros salvos.")
+                if total_orphans > 0:
+                    st.warning(f"**{total_orphans} vendas órfãs** não foram atribuídas (CNPJ não encontrado).")
