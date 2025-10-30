@@ -10,6 +10,7 @@ st.set_page_config(
 )
 
 # --- Lógica de Redirecionamento ---
+# Se o usuário já está logado, manda direto para o Dashboard
 if "authenticated" in st.session_state and st.session_state.authenticated:
     st.switch_page("pages/1_📈_Dashboard_Geral.py")
 
@@ -38,6 +39,7 @@ with col2:
                     success, message = login_user(email, password)
                     if success:
                         st.toast("Login bem-sucedido!", icon="🎉")
+                        # Redirecionamento após o login
                         st.switch_page("pages/1_📈_Dashboard_Geral.py")
                     else:
-                        st.error(f"Erro: {message}")
+                        st.error(f"{message}")
