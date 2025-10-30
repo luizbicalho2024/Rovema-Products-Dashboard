@@ -125,8 +125,8 @@ with col1:
         hole=0.3
     )
     fig.update_traces(textposition='inside', textinfo='percent+label')
-    # CORREÇÃO PARA O GRÁFICO:
-    st.plotly_chart(fig, use_container_width=True) # Plotly ainda usa use_container_width
+    # Plotly usa use_container_width, o aviso não se aplica aqui.
+    st.plotly_chart(fig, use_container_width=True)
     
     # Ponto de Atenção: Produtos com Baixa Receita
     st.subheader("Pontos de Atenção: Menor Receita")
@@ -144,8 +144,8 @@ with col2:
         y="revenue_net",
         title="Receita Líquida ao Longo do Tempo"
     )
-    # CORREÇÃO PARA O GRÁFICO:
-    st.plotly_chart(fig_time, use_container_width=True) # Plotly ainda usa use_container_width
+    # Plotly usa use_container_width
+    st.plotly_chart(fig_time, use_container_width=True)
     
     # Estratégia: Produtos com Maior Receita
     st.subheader("Estratégia: Maior Receita")
