@@ -1,4 +1,10 @@
 import streamlit as st
+import sys
+import os
+
+# CORREÇÃO PARA 'KeyError: utils': Adiciona o diretório raiz ao path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from utils.firebase_config import get_admin_auth, get_db
 
 st.set_page_config(page_title="Admin Bootstrap", layout="centered")
