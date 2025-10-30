@@ -113,53 +113,66 @@ df_users, user_goals = get_supporting_data()
 
 # --- 4. Filtros na Sidebar ---
 st.sidebar.header("Filtros do Dashboard")
+my_role = st.session_state.user_role
+my_uid = st.session_state.user_uid
+
+# --- MELHORIA DE USABILIDADE: Persistência de Filtros ---
+# Inicializa o estado da sessão para os filtros
 default_start = datetime.now().replace(day=1)
 default_end = datetime.now()
 
-filter_start_date = st.sidebar.date_input("Data Inicial", default_start)
-filter_end_date = st.sidebar.date_input("Data Final", default_end)
+if 'filter_start_date' not in st.session_state:
+    st.session_state.filter_start_date = default_start
+if 'filter_end_date' not in st.session_state:
+    st.session_state.filter_end_date = default_end
+if 'filter_source' not in st.session_state:
+    st.session_state.filter_source = []
+if 'filter_manager' not in st.session_state:
+    st.session_state.filter_manager = "all"
+if 'filter_consultant' not in st.session_state:
+    st.session_state.filter_consultant = "all"
 
-# --- MELHORIA: Filtros Avançados ---
-filter_source = st.sidebar.multiselect(
+# Usa 'key' para vincular o widget ao st.session_state
+st.sidebar.date_input("Data Inicial", key="filter_start_date")
+st.sidebar.date_input("Data Final", key="filter_end_date")
+
+st.sidebar.multiselect(
     "Filtrar por Produto",
     options=["Bionio", "Rovema Pay", "ASTO", "ELIQ"],
+    key="filter_source",
     placeholder="Todos os Produtos"
 )
 
 # Filtros de Acesso
-filter_manager = None
-filter_consultant = None
-my_role = st.session_state.user_role
-my_uid = st.session_state.user_uid
-
 if my_role == 'admin':
     # Admin pode filtrar por Gestor
     manager_list = {u['uid']: u['name'] for _, u in df_users[df_users['role'] == 'manager'].iterrows()}
     manager_list = {"all": "Todos os Gestores"} | manager_list
-    selected_manager_uid = st.sidebar.selectbox(
+    
+    st.sidebar.selectbox(
         "Filtrar por Gestor",
         options=manager_list.keys(),
-        format_func=lambda uid: manager_list[uid]
+        format_func=lambda uid: manager_list[uid],
+        key="filter_manager"
     )
-    if selected_manager_uid != "all":
-        filter_manager = selected_manager_uid # Usado na Query
-        
-        # Se selecionou gestor, filtra consultores desse gestor
+    
+    # Se selecionou gestor, filtra consultores desse gestor
+    if st.session_state.filter_manager != "all":
         consultant_list = {u['uid']: u['name'] for _, u in df_users[
-            (df_users['role'] == 'consultant') & (df_users['manager_uid'] == selected_manager_uid)
+            (df_users['role'] == 'consultant') & (df_users['manager_uid'] == st.session_state.filter_manager)
         ].iterrows()}
     else:
         # Lista todos consultores
         consultant_list = {u['uid']: u['name'] for _, u in df_users[df_users['role'] == 'consultant'].iterrows()}
     
     consultant_list = {"all": "Todos os Consultores"} | consultant_list
-    selected_consultant_uid = st.sidebar.selectbox(
+    
+    st.sidebar.selectbox(
         "Filtrar por Consultor",
         options=consultant_list.keys(),
-        format_func=lambda uid: consultant_list[uid]
+        format_func=lambda uid: consultant_list.get(uid, "Todos os Consultores"),
+        key="filter_consultant"
     )
-    if selected_consultant_uid != "all":
-        filter_consultant = selected_consultant_uid # Usado no Pandas
 
 elif my_role == 'manager':
     # Gestor pode filtrar por seus consultores
@@ -168,18 +181,31 @@ elif my_role == 'manager':
     ].iterrows()}
     consultant_list = {"all": "Todo o Time"} | consultant_list
     
-    selected_consultant_uid = st.sidebar.selectbox(
+    st.sidebar.selectbox(
         "Filtrar por Consultor",
         options=consultant_list.keys(),
-        format_func=lambda uid: consultant_list[uid]
+        format_func=lambda uid: consultant_list[uid],
+        key="filter_consultant" # "filter_consultant" será o UID do consultor
     )
-    if selected_consultant_uid != "all":
-        filter_manager = selected_consultant_uid # Na query, 'manager_uid_filter' é o UID do consultor
 
 # Botão de Carregar
 load_button = st.sidebar.button("Aplicar Filtros e Carregar Dados", type="primary", use_container_width=True)
 
 # --- 5. Lógica de Carregamento e Exibição ---
+
+# Pega filtros do st.session_state
+filter_start_date = st.session_state.filter_start_date
+filter_end_date = st.session_state.filter_end_date
+filter_source = st.session_state.filter_source
+filter_consultant_id = st.session_state.filter_consultant
+filter_manager_id = st.session_state.filter_manager
+
+# Determina o filtro de query
+query_filter = None
+if my_role == 'admin' and filter_manager_id != 'all':
+    query_filter = filter_manager_id # Admin filtrando por gestor
+elif my_role == 'manager' and filter_consultant_id != 'all':
+    query_filter = filter_consultant_id # Manager filtrando por consultor
 
 # Inicializa estados
 if "dashboard_data" not in st.session_state:
@@ -187,13 +213,12 @@ if "dashboard_data" not in st.session_state:
 
 if load_button:
     with st.spinner("Carregando dados... Por favor, aguarde."):
-        # Busca os dados (período atual e anterior)
         df_curr, df_prev, prev_period = query_sales_data(
             filter_start_date, 
             filter_end_date, 
             my_role, 
             my_uid,
-            filter_manager # UID do Gestor (Admin) ou UID do Consultor (Manager)
+            query_filter
         )
         
         df_curr = process_dataframe(df_curr)
@@ -216,9 +241,9 @@ if filter_source:
     df_display = df_display[df_display['source'].isin(filter_source)]
     df_prev_display = df_prev_display[df_prev_display['source'].isin(filter_source)]
 
-if filter_consultant: # Filtro de consultor (quando Admin seleciona)
-    df_display = df_display[df_display['consultant_uid'] == filter_consultant]
-    df_prev_display = df_prev_display[df_prev_display['consultant_uid'] == filter_consultant]
+if my_role == 'admin' and filter_consultant_id != 'all':
+    df_display = df_display[df_display['consultant_uid'] == filter_consultant_id]
+    df_prev_display = df_prev_display[df_prev_display['consultant_uid'] == filter_consultant_id]
 
 
 if df_display.empty and load_button:
@@ -267,9 +292,9 @@ st.divider()
 # --- 8. Módulo de Metas (Visível para Consultor/Manager) ---
 if my_role in ['consultant', 'manager']:
     
-    target_uid = my_uid if my_role == 'consultant' else filter_manager # Se manager filtrando consultor
+    target_uid = my_uid if my_role == 'consultant' else filter_consultant_id # Se manager filtrando consultor
     
-    if my_role == 'manager' and not filter_manager: # Manager vendo o time todo
+    if my_role == 'manager' and filter_consultant_id == 'all': # Manager vendo o time todo
         st.subheader("Meta do Time (Mês Atual)")
         # Lógica para somar metas do time
         my_team_uids = df_users[df_users['manager_uid'] == my_uid]['uid'].tolist()
@@ -283,7 +308,8 @@ if my_role in ['consultant', 'manager']:
         current_value = team_revenue_month
 
     else: # Consultor ou Manager filtrando 1 consultor
-        user_name = df_users[df_users['uid'] == target_uid]['name'].values[0]
+        user_name_series = df_users[df_users['uid'] == target_uid]['name']
+        user_name = user_name_series.values[0] if not user_name_series.empty else "Consultor"
         st.subheader(f"Meta de {user_name.split(' ')[0]} (Mês Atual)")
         
         goal_value = user_goals.get(target_uid, 0)
