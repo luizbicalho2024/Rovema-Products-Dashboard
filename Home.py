@@ -18,7 +18,9 @@ if "authenticated" in st.session_state and st.session_state.authenticated:
 col1, col2, col3 = st.columns([1, 2, 1])
 
 with col2:
-    st.image("logoRB.png", use_column_width=True)
+    # Correção aqui:
+    st.image("logoRB.png", use_container_width=True)
+    
     st.title("BI Comercial")
     st.markdown("Por favor, faça o login para continuar.")
 
