@@ -6,8 +6,9 @@ import os
 
 # Carrega as credenciais do Streamlit Secrets
 try:
-    # Carrega a string JSON completa do admin
-    service_account_json_str = st.secrets["FIREBASE_SERVICE_ACCOUNT_JSON"]
+    # CORREÇÃO APLICADA AQUI:
+    # Busca o JSON de dentro da seção [firebase_config]
+    service_account_json_str = st.secrets["firebase_config"]["FIREBASE_SERVICE_ACCOUNT_JSON"]
     
     # Carrega a configuração web (para login)
     firebase_config_dict = st.secrets["firebase_config"]
