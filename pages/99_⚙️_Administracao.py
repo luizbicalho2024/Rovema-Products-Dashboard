@@ -8,11 +8,10 @@ from utils.data_processing import (
     process_eliq_api
 )
 from datetime import datetime
-import asyncio # Para rodar as APIs de forma assíncrona
+import asyncio 
 
 # --- 1. Proteção da Página ---
 auth_guard()
-# Apenas Admins podem ver esta página
 check_role(["admin"])
 
 st.title("⚙️ Painel de Administração")
@@ -22,7 +21,6 @@ st.title("⚙️ Painel de Administração")
 def get_all_users_and_clients():
     db = get_db()
     
-    # Busca todos os usuários (consultores e gestores)
     users_ref = db.collection("users").stream()
     users_list = []
     for user in users_ref:
@@ -34,7 +32,6 @@ def get_all_users_and_clients():
             "role": data.get("role")
         })
     
-    # Busca todos os clientes
     clients_ref = db.collection("clients").stream()
     clients_list = []
     for client in clients_ref:
@@ -63,16 +60,11 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "☁️ Carga de Dados (API)"
 ])
 
-
-# --- ABA 1: GESTÃO DE CLIENTES (Obrigatório para o sistema funcionar) ---
+# --- ABA 1: GESTÃO DE CLIENTES ---
 with tab1:
     st.header("Atribuir Clientes a Consultores")
-    st.info("""
-    Este é o módulo mais importante. As vendas dos produtos de API (ASTO, ELIQ) e CSVs 
-    só serão atribuídas a um consultor se o CNPJ do cliente estiver mapeado aqui.
-    """)
+    st.info("Este é o módulo mais importante para o mapeamento das vendas.")
     
-    # Listas para os filtros
     consultant_dict = {u['uid']: f"{u['name']} ({u['email']})" for u in users if u['role'] == 'consultant'}
     client_dict = {c['cnpj']: c['name'] for c in clients}
 
@@ -81,7 +73,6 @@ with tab1:
     with col1:
         st.subheader("Atribuir/Atualizar Cliente")
         
-        # Filtro para encontrar clientes
         client_cnpj_list = ["Novo Cliente"] + [f"{name} ({cnpj})" for cnpj, name in client_dict.items()]
         selected_client_str = st.selectbox("Buscar Cliente por Nome", client_cnpj_list, index=0)
         
@@ -107,7 +98,6 @@ with tab1:
                 db = get_db()
                 admin_auth = get_admin_auth()
                 
-                # Busca o gestor do consultor
                 try:
                     consultant_doc = db.collection("users").document(selected_consultant_uid).get()
                     manager_uid = consultant_doc.to_dict().get("manager_uid")
@@ -118,26 +108,24 @@ with tab1:
                 client_data = {
                     "client_name": client_name,
                     "consultant_uid": selected_consultant_uid,
-                    "manager_uid": manager_uid, # Denormalizado para performance
+                    "manager_uid": manager_uid, 
                     "updated_at": datetime.now()
                 }
                 
-                # Salva no Firestore usando o CNPJ limpo como ID do documento
                 clean_cnpj_val = "".join(filter(str.isdigit, client_cnpj))
                 db.collection("clients").document(clean_cnpj_val).set(client_data, merge=True)
                 
                 st.success(f"Cliente '{client_name}' salvo e associado a {consultant_dict[selected_consultant_uid]}!")
-                st.cache_data.clear() # Limpa o cache para recarregar a lista
+                st.cache_data.clear() 
                 st.rerun()
 
     with col2:
         st.subheader("Carteiras Atuais")
         clients_df = pd.DataFrame(clients)
-        # Mapeia UID para Nome para visualização
         consultant_name_map = {u['uid']: u['name'] for u in users}
         clients_df['consultant_name'] = clients_df['consultant_uid'].map(consultant_name_map).fillna("N/A")
-        st.dataframe(clients_df[['cnpj', 'name', 'consultant_name']], use_container_width=True)
-
+        # CORREÇÃO PARA O DATAFRAME:
+        st.dataframe(clients_df[['cnpj', 'name', 'consultant_name']], width='stretch')
 
 # --- ABA 2: GESTÃO DE USUÁRIOS ---
 with tab2:
@@ -148,7 +136,6 @@ with tab2:
     with col1:
         st.subheader("Criar Novo Usuário")
         
-        # Lista de Gestores para atribuição
         manager_dict = {u['uid']: u['name'] for u in users if u['role'] == 'manager'}
         
         with st.form("new_user_form", clear_on_submit=True):
@@ -165,7 +152,8 @@ with tab2:
                     format_func=lambda uid: manager_dict[uid]
                 )
             
-            submit_user = st.form_submit_button("Criar Usuário")
+            # CORREÇÃO PARA O BOTÃO:
+            submit_user = st.form_submit_button("Criar Usuário", width='stretch')
             
             if submit_user:
                 if not name or not email or not password or not role:
@@ -175,14 +163,12 @@ with tab2:
                         admin_auth = get_admin_auth()
                         db = get_db()
                         
-                        # 1. Cria o usuário no Firebase Authentication
                         user_record = admin_auth.create_user(
                             email=email,
                             password=password,
                             display_name=name
                         )
                         
-                        # 2. Salva os dados (role, manager) no Firestore
                         user_data = {
                             "name": name,
                             "email": email,
@@ -201,8 +187,8 @@ with tab2:
     with col2:
         st.subheader("Usuários Existentes")
         users_df = pd.DataFrame(users)
-        st.dataframe(users_df, use_container_width=True)
-
+        # CORREÇÃO PARA O DATAFRAME:
+        st.dataframe(users_df, width='stretch')
 
 # --- ABA 3: CARGA DE DADOS (CSV) ---
 with tab3:
@@ -228,16 +214,11 @@ with tab3:
                 if total:
                     st.success(f"Processamento Rovema Pay concluído! {total} registros salvos.")
 
-
 # --- ABA 4: CARGA DE DADOS (API) ---
 with tab4:
     st.header("Carga de Dados via API")
-    st.info("""
-    As credenciais das APIs são lidas automaticamente dos Secrets do Streamlit Cloud.
-    Basta selecionar o período e carregar.
-    """)
+    st.info("As credenciais são lidas automaticamente dos Secrets. Basta selecionar o período.")
     
-    # Define o período para ambas as APIs
     st.subheader("Selecione o Período de Carga")
     col1, col2 = st.columns(2)
     api_start_date = col1.date_input("Data Inicial", datetime.now().replace(day=1))
@@ -250,7 +231,6 @@ with tab4:
     
     if st.button("Carregar Dados ASTO"):
         with st.spinner("Buscando dados na API ASTO..."):
-            # A função agora lê os secrets internamente
             total = asyncio.run(process_asto_api(api_start_date, api_end_date))
             if total:
                 st.success(f"Carga ASTO concluída! {total} registros salvos.")
@@ -262,7 +242,6 @@ with tab4:
 
     if st.button("Carregar Dados ELIQ"):
         with st.spinner("Buscando dados na API ELIQ..."):
-            # A função agora lê os secrets internamente
             total = asyncio.run(process_eliq_api(api_start_date, api_end_date))
-                if total:
-                    st.success(f"Carga ELIQ concluída! {total} registros salvos.")
+            if total:
+                st.success(f"Carga ELIQ concluída! {total} registros salvos.")
