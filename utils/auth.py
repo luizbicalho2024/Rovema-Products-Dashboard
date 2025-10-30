@@ -1,4 +1,3 @@
-# utils/auth.py
 import streamlit as st
 from utils.firebase_config import get_db
 import time
@@ -53,11 +52,14 @@ def login_user(email, password):
 
     except httpx.HTTPStatusError as e:
         # Erro na requisição (ex: senha errada, usuário não encontrado)
-        error_data = e.response.json()
-        error_message = error_data.get("error", {}).get("message", "Erro desconhecido")
+        try:
+            error_data = e.response.json()
+            error_message = error_data.get("error", {}).get("message", "Erro desconhecido")
+        except:
+             error_message = str(e)
         
         # Traduz erros comuns
-        if error_message == "INVALID_PASSWORD" or error_message == "EMAIL_NOT_FOUND" or "INVALID_LOGIN_CREDENTIALS" in error_message:
+        if "INVALID_PASSWORD" in error_message or "EMAIL_NOT_FOUND" in error_message or "INVALID_LOGIN_CREDENTIALS" in error_message:
             return False, "Email ou senha inválidos."
         
         return False, f"Falha no login: {error_message}"
@@ -89,7 +91,10 @@ def auth_guard():
         st.switch_page("Home.py")
     
     # Exibe o logo e o botão de logout na sidebar de todas as páginas autenticadas
-    st.sidebar.image("logoRB.png", use_column_width=True)
+    
+    # Correção aqui:
+    st.sidebar.image("logoRB.png", use_container_width=True)
+    
     st.sidebar.button("Logout", on_click=logout, use_container_width=True, type="primary")
 
 def check_role(roles: list):
