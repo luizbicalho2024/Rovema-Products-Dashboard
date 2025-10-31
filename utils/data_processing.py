@@ -278,144 +278,26 @@ def process_rovema_csv(uploaded_file):
 
 async def process_asto_api(start_date, end_date):
     """
-    Processa a API ASTO (Logpay) - Manutenção.
-    Alterado para usar o endpoint 'FaturaPagamentoFechadaApuracao'
-    que o usuário confirmou que funciona.
+    Processa a API ASTO (Logpay) - MANUTENÇÃO.
+    Esta função está DESATIVADA até que um endpoint funcional seja fornecido.
     """
     
-    full_url_for_log = "https://revistacasaejardim.globo.com/arquitetura/noticia/2025/02/como-o-mundo-teria-sido-23-projetos-arquitetonicos-que-nunca-foram-construidos.ghtml"
+    # --- MUDANÇA APLICADA ---
+    # Interrompe a execução e informa o usuário
     
-    try:
-        creds = st.secrets["api_credentials"]
-        
-        # 'asto_url' DEVE ser ".../api/Fatura/FaturaPagamentoFechadaApuracao"
-        URL_ASTO_BASE = creds["asto_url"] 
-        api_user = creds["asto_username"]
-        api_pass = creds["asto_password"]
-        
-        asto_spread_rate = float(creds.get("asto_spread_rate", 0.015)) 
-        
-    except KeyError as e:
-        st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets.")
-        st.error("Certifique-se de que 'asto_url', 'asto_username' e 'asto_password' existem.")
-        return
-    except Exception as e:
-        st.error(f"Erro ao ler Secrets da API: {e}")
-        return
-
-    # --- CORREÇÃO APLICADA AQUI ---
-    # As datas são formatadas e anexadas ao URL
-    start_str = start_date.strftime("%Y-%m-%d")
-    end_str = end_date.strftime("%Y-%m-%d")
+    st.error("Integração ASTO (Manutenção) Pausada")
+    st.warning("""
+    Não foi possível carregar os dados do ASTO (Manutenção).
     
-    # O URL final é construído com as datas no caminho (path)
-    URL_ASTO_FINAL = f"{URL_ASTO_BASE}/{start_str}/{end_str}"
+    **Motivo:** Nenhuma das APIs ASTO/Logpay testadas fornece os dados necessários.
+    - A API de Fatura (`.../FaturaPagamentoFechadaApuracao`) funciona, mas **não retorna o CNPJ do Cliente**, impedindo a atribuição.
+    - A API de Transações (`.../ManutencoesAnalitico`) **retorna erro 404** (Não Encontrado).
     
-    # Parâmetros de query (params) estão vazios
-    params = {}
-    # -----------------------------
+    **Ação Necessária:** Por favor, entre em contato com o suporte da ASTO/Logpay e solicite um **endpoint de transações analíticas de manutenção** que inclua o `cnpjCliente`, `valor` e `data` de cada transação.
+    """)
     
-    auth = (api_user, api_pass)
-    records_to_write = {}
-    
-    try:
-        # Atualiza a variável de log
-        full_url_for_log = URL_ASTO_FINAL
-        st.info(f"Tentando chamar a API ASTO (Manutenção) no endpoint: {full_url_for_log}")
-        
-        async with httpx.AsyncClient(auth=auth, timeout=30.0) as client:
-            # Chama o URL final e passa os parâmetros (vazios)
-            response = await client.get(URL_ASTO_FINAL, params=params)
-            response.raise_for_status() 
-            data = response.json()
-
-        st.success(f"API ASTO: {len(data)} faturas de manutenção encontradas.")
-        if not data:
-            st.warning("Nenhum dado retornado pela API ASTO para o período.")
-            return 0, 0
-        
-        # --- BLOCO DE PROCESSAMENTO (ASTO) ---
-        try:
-            for sale in data:
-                # --- VERIFICAÇÃO DE DADOS CRÍTICOS ---
-                # Este endpoint (Fatura) não contém o CNPJ do cliente.
-                # Ele contém o CNPJ do *Estabelecimento* (ex: 'cnpjEstabelecimento')
-                # mas não do cliente que comprou.
-                if 'cnpjCliente' not in sale:
-                    st.error("Erro Crítico de Dados: A API de Fatura (ASTO) foi chamada com sucesso, mas ela não retorna o 'cnpjCliente' nas transações.")
-                    st.error("Sem o CNPJ do Cliente, não é possível atribuir a venda a um consultor.")
-                    st.warning("Por favor, solicite à ASTO/Logpay o endpoint de 'Transações Analíticas de Manutenção' que inclua o CNPJ do cliente.")
-                    st.info("Amostra do primeiro registro recebido (para depuração):")
-                    st.json(data[0])
-                    return
-                # --- FIM DA VERIFICAÇÃO ---
-                
-                # Este código (abaixo) provavelmente nunca será executado
-                cnpj = clean_cnpj(sale.get('cnpjCliente'))
-                if not cnpj: 
-                    continue 
-
-                data_venda = datetime.fromisoformat(sale['dataInicioApuracao'])
-                revenue_gross = float(sale.get('valorBruto', 0))
-                revenue_net = float(sale.get('valorLiquido', 0))
-                
-                # Se 'valorLiquido' não for a receita, usamos o spread
-                if revenue_net == 0:
-                    revenue_net = revenue_gross * asto_spread_rate 
-                
-                consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
-                doc_id = f"ASTO_{sale['faturaPagamentoID']}"
-                
-                unified_record = {
-                    "source": "ASTO",
-                    "client_cnpj": cnpj,
-                    "client_name": "N/A (API de Fatura)",
-                    "consultant_uid": consultant_uid,
-                    "manager_uid": manager_uid,
-                    "date": data_venda,
-                    "revenue_gross": revenue_gross,
-                    "revenue_net": revenue_net,
-                    "product_name": "Manutenção (Fatura)",
-                    "product_detail": sale.get('estabelecimentoNomeFantasia', 'N/A'),
-                    "volume": 0,
-                    "status": "Confirmado",
-                    "raw_id": str(sale.get('faturaPagamentoID', 'N/A')),
-                }
-                records_to_write[doc_id] = unified_record
-        
-        except KeyError as e:
-            st.error(f"Erro ao processar o JSON da ASTO. Chave não encontrada: {e}")
-            st.info("Amostra do primeiro registro recebido (para depuração):")
-            st.json(data[0] if data else "Nenhum dado recebido.")
-            return
-        except Exception as e:
-            st.error(f"Erro inesperado ao processar os dados da ASTO: {e}")
-            st.info("Amostra do primeiro registro recebido (para depuração):")
-            st.json(data[0] if data else "Nenhum dado recebido.")
-            return
-        # --- FIM DO BLOCO ---
-            
-        total_saved, total_orphans = batch_write_to_firestore(records_to_write)
-        
-        log_audit(
-            action="load_api",
-            details={
-                "product": "ASTO (Manutenção)",
-                "start_date": start_date.strftime("%Y-%m-%d"),
-                "end_date": end_date.strftime("%Y-%m-%d"),
-                "rows_found": len(data),
-                "rows_saved": total_saved,
-                "rows_orphaned": total_orphans
-            }
-        )
-        
-        return total_saved, total_orphans
-
-    except httpx.HTTPStatusError as e:
-        st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}")
-        st.error(f"O URL que falhou foi: {full_url_for_log}")
-    except Exception as e:
-        st.error(f"Erro ao processar dados ASTO: {e}")
+    return 0, 0
+    # --- FIM DA MUDANÇA ---
 
 
 async def process_eliq_api(start_date, end_date):
