@@ -5,6 +5,7 @@ from utils.logger import log_audit  # Importa a nova função de log
 import httpx # Para chamadas de API
 from datetime import datetime
 import urllib.parse # Importado para depuração
+import time # <-- IMPORTADO PARA O SLEEP
 
 # --- FUNÇÕES DE LIMPEZA (ETL) ---
 
@@ -83,7 +84,8 @@ def batch_write_to_firestore(records):
     total_written = 0
     total_orphans = 0 # Contagem de órfãs
     
-    progress_bar = st.progress(0, text="Salvando dados no banco...")
+    total_records = len(records)
+    progress_bar = st.progress(0, text="Salvando dados no banco... (Isso pode levar vários minutos)")
     
     for i, (doc_id, data) in enumerate(records.items()):
         doc_ref = db.collection("sales_data").document(doc_id)
@@ -96,9 +98,17 @@ def batch_write_to_firestore(records):
         if count == 499: # Limite do batch é 500
             batch.commit()
             total_written += count
+            
+            # --- CORREÇÃO 1: Pausa para evitar Rate Limit (Erro 429) ---
+            time.sleep(1) # Pausa por 1 segundo
+            # -----------------------------------------------------------
+            
             batch = db.batch() # Novo batch
             count = 0
-            progress_bar.progress(i / len(records), text=f"Salvando dados... ({total_written} registros)")
+            
+            # Atualiza a barra de progresso
+            progress_percentage = (i + 1) / total_records
+            progress_bar.progress(progress_percentage, text=f"Salvando dados... ({total_written} / {total_records} registros)")
             
     if count > 0:
         batch.commit() # Salva o lote final
@@ -368,7 +378,10 @@ async def process_eliq_api(start_date, end_date):
     # ------------------------
 
     try:
-        async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+        # --- CORREÇÃO 2: Aumentar o Timeout ---
+        # Aumenta para 120 segundos (2 minutos) para baixar os 23k+ registros
+        async with httpx.AsyncClient(headers=headers, timeout=120.0) as client:
+        # --------------------------------------
             response = await client.get(URL_ELIQ, params=params)
             response.raise_for_status()
             data = response.json() # O JSON de retorno é uma LISTA de transações
@@ -382,42 +395,26 @@ async def process_eliq_api(start_date, end_date):
             if sale.get('status') != 'confirmada':
                 continue 
 
-            # 2. Limpeza e ETL (Baseado nos JSONs enviados)
-            
-            # O 'informacao' não existe no JSON; os dados estão em nível superior
-            # ou em objetos com nome ('cliente', 'produto')
-            
             cliente_info = sale.get('cliente', {})
             if not cliente_info:
-                # Tenta buscar no 'informacao' (plano B, se a estrutura do JSON variar)
                 cliente_info = sale.get('informacao', {}).get('cliente', {})
             
             if not cliente_info:
-                continue # Pula se não houver dados do cliente
-
+                continue 
+            
             cnpj = clean_cnpj(cliente_info.get('cnpj'))
             if not cnpj: continue
 
             data_venda = datetime.strptime(sale['data_cadastro'], "%Y-%m-%d %H:%M:%S")
             revenue_gross = clean_value(sale.get('valor_total', 0))
-
-            # --- CORREÇÃO 2: Métrica de Receita ---
-            # Com base no transacoes.json:
-            # valor_total (381.15) + valor_taxa_cliente (-24.77) = valor_liquido_cliente (356.38)
-            # A "receita" é o valor_taxa_cliente.
-            # No transacoes 1a15agosto2025.json:
-            # valor_total (216.14) - desconto (14.05) = valor_liquido_cliente (202.09)
-            # A "receita" é o desconto.
-            # Vamos usar o valor_taxa_cliente como prioridade, e o desconto como fallback.
             
+            # Métrica de Receita
             revenue_net_raw = sale.get('valor_taxa_cliente', sale.get('desconto', 0))
             revenue_net = abs(clean_value(revenue_net_raw))
-            # ----------------------------------------
             
             produto_info = sale.get('produto', {})
             if not produto_info:
                 produto_info = sale.get('informacao', {}).get('produto', {})
-
             
             # 3. Mapeamento
             consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
@@ -444,6 +441,7 @@ async def process_eliq_api(start_date, end_date):
             records_to_write[doc_id] = unified_record
             
         # 6. Salva no Firestore
+        # Esta função (batch_write_to_firestore) agora tem o sleep(1)
         total_saved, total_orphans = batch_write_to_firestore(records_to_write)
         
         log_audit(
@@ -463,5 +461,7 @@ async def process_eliq_api(start_date, end_date):
     except httpx.HTTPStatusError as e:
         st.error(f"Erro na API ELIQ: {e.response.status_code} - {e.response.text}")
         st.error(f"O URL completo que falhou foi: {full_url_for_log}")
+    except httpx.TimeoutException:
+        st.error(f"Erro na API ELIQ: O Timeout de 120 segundos foi excedido. A API está muito lenta.")
     except Exception as e:
         st.error(f"Erro ao processar dados ELIQ: {e}")
