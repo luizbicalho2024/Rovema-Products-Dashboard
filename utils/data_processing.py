@@ -4,7 +4,7 @@ from utils.firebase_config import get_db
 from utils.logger import log_audit  # Importa a nova função de log
 import httpx # Para chamadas de API
 from datetime import datetime
-import urllib.parse # <-- Importado para depuração
+import urllib.parse # Importado para depuração
 
 # --- FUNÇÕES DE LIMPEZA (ETL) ---
 
@@ -267,16 +267,19 @@ def process_rovema_csv(uploaded_file):
     return total_saved, total_orphans
 
 async def process_asto_api(start_date, end_date):
-    """Processa a API ASTO (Logpay)."""
+    """
+    Processa a API ASTO (Logpay).
+    ATUALMENTE QUEBRADA - Aguardando endpoint de Manutenção.
+    """
     
-    # --- MELHORIA: Variável de diagnóstico ---
     full_url_for_log = "https://revistacasaejardim.globo.com/arquitetura/noticia/2025/02/como-o-mundo-teria-sido-23-projetos-arquitetonicos-que-nunca-foram-construidos.ghtml"
-    # ----------------------------------------
     
     try:
         creds = st.secrets["api_credentials"]
         
-        URL_ASTO = creds["asto_url"] 
+        # Este URL está incorreto (é de abastecimento), mas mantemos 
+        # para o log de depuração mostrar a falha.
+        URL_ASTO = creds.get("asto_url", "N/A (asto_url não configurado)") 
         api_user = creds["asto_username"]
         api_pass = creds["asto_password"]
         asto_spread_rate = float(creds.get("asto_spread_rate", 0.015)) 
@@ -289,7 +292,7 @@ async def process_asto_api(start_date, end_date):
         st.error(f"Erro ao ler Secrets da API: {e}")
         return
 
-    # Parâmetros de data
+    # Parâmetros de data (para o endpoint de abastecimento que falha)
     params = {
         "dataInicial": start_date.strftime("%Y-%m-%d"),
         "dataFinal": end_date.strftime("%Y-%m-%d"),
@@ -299,88 +302,43 @@ async def process_asto_api(start_date, end_date):
     auth = (api_user, api_pass)
     records_to_write = {}
     
+    # AVISO: Esta função (ASTO) não deve funcionar 
+    # pois o endpoint é de Manutenção, não Abastecimento
+    st.warning("A API ASTO (Manutenção) ainda não foi configurada com o endpoint correto.")
+    st.error("Aguardando o URL da API de Manutenção. Esta chamada irá falhar.")
+    
     try:
-        # --- MELHORIA: Log de diagnóstico ---
         full_url_for_log = f"{URL_ASTO}?{urllib.parse.urlencode(params)}"
-        st.info(f"Tentando chamar a API ASTO no endpoint: {full_url_for_log}")
-        # ------------------------------------
+        st.info(f"Tentando chamar a API ASTO (Manutenção) no endpoint: {full_url_for_log}")
         
         async with httpx.AsyncClient(auth=auth, timeout=30.0) as client:
             response = await client.get(URL_ASTO, params=params)
-            response.raise_for_status() # Lança erro se a API falhar
+            response.raise_for_status() 
             data = response.json()
 
         st.write(f"API ASTO: {len(data)} abastecimentos encontrados.")
-        if not data:
-            st.warning("Nenhum dado retornado pela API ASTO para o período.")
-            return 0, 0
-
-        for sale in data:
-            # 2. Limpeza e ETL
-            cnpj = clean_cnpj(sale.get('cnpjCliente'))
-            if not cnpj: continue # Pula se não tiver CNPJ
-
-            data_venda = datetime.fromisoformat(sale['data'])
-            revenue_gross = float(sale.get('valor', 0))
-            revenue_net = revenue_gross * asto_spread_rate 
-            
-            # 3. Mapeamento
-            consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
-            
-            # 4. Gera ID único
-            doc_id = f"ASTO_{sale['id']}" # Assumindo que 'id' é o ID do abastecimento
-            
-            # 5. Monta o registro unificado
-            unified_record = {
-                "source": "ASTO",
-                "client_cnpj": cnpj,
-                "client_name": sale.get('nomeCliente', 'N/A'),
-                "consultant_uid": consultant_uid,
-                "manager_uid": manager_uid,
-                "date": data_venda,
-                "revenue_gross": revenue_gross,
-                "revenue_net": revenue_net,
-                "product_name": sale.get('nomeProduto', 'N/A'),
-                "product_detail": sale.get('nomeServico', 'N/A'),
-                "volume": float(sale.get('litros', 0)),
-                "status": "Confirmado", # Assumindo que a API só retorna confirmados
-                "raw_id": str(sale.get('id', 'N/A')),
-            }
-            records_to_write[doc_id] = unified_record
-            
-        # 6. Salva no Firestore
-        total_saved, total_orphans = batch_write_to_firestore(records_to_write)
+        # ... (Lógica de processamento que não será executada) ...
         
-        log_audit(
-            action="load_api",
-            details={
-                "product": "ASTO",
-                "start_date": start_date.strftime("%Y-%m-%d"),
-                "end_date": end_date.strftime("%Y-%m-%d"),
-                "rows_found": len(data),
-                "rows_saved": total_saved,
-                "rows_orphaned": total_orphans
-            }
-        )
+        # ... (Lógica de salvar no Firestore) ...
         
-        return total_saved, total_orphans
+        return 0, 0 # Retorna 0 pois não deve processar
 
     except httpx.HTTPStatusError as e:
-        # --- MELHORIA: Log de diagnóstico ---
         st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}")
-        st.error(f"O URL completo que falhou foi: {full_url_for_log}")
-        st.error(f"Verifique se o 'asto_url' nos seus Secrets está 100% correto.")
-        # ------------------------------------
+        st.error(f"O URL (incorreto) que falhou foi: {full_url_for_log}")
+        st.error(f"Por favor, forneça o endpoint (URL) correto para 'Manutenção' da ASTO/Logpay.")
     except Exception as e:
         st.error(f"Erro ao processar dados ASTO: {e}")
 
 
 async def process_eliq_api(start_date, end_date):
-    """Processa a API ELIQ (Uzzipay)."""
-    # Lê as credenciais dos Secrets
+    """
+    Processa a API ELIQ (Uzzipay/Sigyo) - ABastecimento.
+    Esta função foi CORRIGIDA.
+    """
     try:
         creds = st.secrets["api_credentials"]
-        URL_ELIQ = creds["eliq_url"]
+        URL_ELIQ = creds["eliq_url"] # Deve ser ".../api/transacoes"
         api_token = creds["eliq_token"]
     except KeyError as e:
         st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets.")
@@ -389,44 +347,77 @@ async def process_eliq_api(start_date, end_date):
         st.error(f"Erro ao ler Secrets da API: {e}")
         return
 
+    # --- CORREÇÃO 1: Formato dos Parâmetros ---
+    # A API espera: TransacaoSearch[data_cadastro]=DD/MM/YYYY - DD/MM/YYYY
+    # E não expand
+    date_range_str = f"{start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}"
     params = {
-        "data_inicio": start_date.strftime("%Y-%m-%d"),
-        "data_fim": end_date.strftime("%Y-%m-%d"),
-        "expand": "informacao.cliente,informacao.produto,informacao.credenciado"
+        "TransacaoSearch[data_cadastro]": date_range_str
     }
+    # ------------------------------------------
     
     headers = {
         "Authorization": f"Bearer {api_token}"
     }
     
     records_to_write = {}
+    
+    # --- Log de Depuração ---
+    full_url_for_log = f"{URL_ELIQ}?{urllib.parse.urlencode(params)}"
+    st.info(f"Tentando chamar a API ELIQ (Abastecimento) no endpoint: {full_url_for_log}")
+    # ------------------------
 
     try:
         async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
             response = await client.get(URL_ELIQ, params=params)
             response.raise_for_status()
-            data = response.json()
+            data = response.json() # O JSON de retorno é uma LISTA de transações
 
-        st.write(f"API ELIQ: {len(data)} transações encontradas.")
+        st.write(f"API ELIQ: {len(data)} transações (abastecimentos) encontradas.")
         if not data:
             st.warning("Nenhum dado retornado pela API ELIQ para o período.")
             return 0, 0
 
         for sale in data:
             if sale.get('status') != 'confirmada':
-                continue # Pula transações não confirmadas
+                continue 
 
-            # 2. Limpeza e ETL
-            info = sale.get('informacao', {})
-            if not info or not info.get('cliente'):
-                continue
-                
-            cnpj = clean_cnpj(info['cliente'].get('cnpj'))
+            # 2. Limpeza e ETL (Baseado nos JSONs enviados)
+            
+            # O 'informacao' não existe no JSON; os dados estão em nível superior
+            # ou em objetos com nome ('cliente', 'produto')
+            
+            cliente_info = sale.get('cliente', {})
+            if not cliente_info:
+                # Tenta buscar no 'informacao' (plano B, se a estrutura do JSON variar)
+                cliente_info = sale.get('informacao', {}).get('cliente', {})
+            
+            if not cliente_info:
+                continue # Pula se não houver dados do cliente
+
+            cnpj = clean_cnpj(cliente_info.get('cnpj'))
             if not cnpj: continue
 
             data_venda = datetime.strptime(sale['data_cadastro'], "%Y-%m-%d %H:%M:%S")
             revenue_gross = clean_value(sale.get('valor_total', 0))
-            revenue_net = clean_value(sale.get('taxa_administrativa', 0))
+
+            # --- CORREÇÃO 2: Métrica de Receita ---
+            # Com base no transacoes.json:
+            # valor_total (381.15) + valor_taxa_cliente (-24.77) = valor_liquido_cliente (356.38)
+            # A "receita" é o valor_taxa_cliente.
+            # No transacoes 1a15agosto2025.json:
+            # valor_total (216.14) - desconto (14.05) = valor_liquido_cliente (202.09)
+            # A "receita" é o desconto.
+            # Vamos usar o valor_taxa_cliente como prioridade, e o desconto como fallback.
+            
+            revenue_net_raw = sale.get('valor_taxa_cliente', sale.get('desconto', 0))
+            revenue_net = abs(clean_value(revenue_net_raw))
+            # ----------------------------------------
+            
+            produto_info = sale.get('produto', {})
+            if not produto_info:
+                produto_info = sale.get('informacao', {}).get('produto', {})
+
             
             # 3. Mapeamento
             consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
@@ -438,14 +429,14 @@ async def process_eliq_api(start_date, end_date):
             unified_record = {
                 "source": "ELIQ",
                 "client_cnpj": cnpj,
-                "client_name": info['cliente'].get('nome', 'N/A'),
+                "client_name": cliente_info.get('nome', 'N/A'),
                 "consultant_uid": consultant_uid,
                 "manager_uid": manager_uid,
                 "date": data_venda,
                 "revenue_gross": revenue_gross,
-                "revenue_net": revenue_net, # ELIQ tem o spread!
-                "product_name": info.get('produto', {}).get('nome', 'N/A'),
-                "product_detail": info.get('produto', {}).get('categoria', 'N/A'),
+                "revenue_net": revenue_net, # Receita Corrigida
+                "product_name": produto_info.get('nome', 'N/A'),
+                "product_detail": produto_info.get('categoria', 'N/A'),
                 "volume": clean_value(sale.get('quantidade', 0)),
                 "status": sale['status'],
                 "raw_id": str(sale.get('id', 'N/A')),
@@ -458,7 +449,7 @@ async def process_eliq_api(start_date, end_date):
         log_audit(
             action="load_api",
             details={
-                "product": "ELIQ",
+                "product": "ELIQ (Abastecimento)",
                 "start_date": start_date.strftime("%Y-%m-%d"),
                 "end_date": end_date.strftime("%Y-%m-%d"),
                 "rows_found": len(data),
@@ -471,5 +462,6 @@ async def process_eliq_api(start_date, end_date):
 
     except httpx.HTTPStatusError as e:
         st.error(f"Erro na API ELIQ: {e.response.status_code} - {e.response.text}")
+        st.error(f"O URL completo que falhou foi: {full_url_for_log}")
     except Exception as e:
         st.error(f"Erro ao processar dados ELIQ: {e}")
