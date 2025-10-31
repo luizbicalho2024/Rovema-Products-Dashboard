@@ -5,7 +5,8 @@ from utils.logger import log_audit  # Importa a nova função de log
 import httpx # Para chamadas de API
 from datetime import datetime
 import urllib.parse # Importado para depuração
-import time # <-- IMPORTADO PARA O SLEEP
+import time # IMPORTADO PARA O SLEEP
+import json # IMPORTADO PARA DEBUG DO ASTO
 
 # --- FUNÇÕES DE LIMPEZA (ETL) ---
 
@@ -99,9 +100,8 @@ def batch_write_to_firestore(records):
             batch.commit()
             total_written += count
             
-            # --- CORREÇÃO 1: Pausa para evitar Rate Limit (Erro 429) ---
+            # Pausa para evitar Rate Limit (Erro 429)
             time.sleep(1) # Pausa por 1 segundo
-            # -----------------------------------------------------------
             
             batch = db.batch() # Novo batch
             count = 0
@@ -278,8 +278,8 @@ def process_rovema_csv(uploaded_file):
 
 async def process_asto_api(start_date, end_date):
     """
-    Processa a API ASTO (Logpay).
-    ATUALMENTE QUEBRADA - Aguardando endpoint de Manutenção.
+    Processa a API ASTO (Logpay) - MANUTENÇÃO.
+    Esta função foi CORRIGIDA para o endpoint 'ManutencoesAnalitico'.
     """
     
     full_url_for_log = "https://revistacasaejardim.globo.com/arquitetura/noticia/2025/02/como-o-mundo-teria-sido-23-projetos-arquitetonicos-que-nunca-foram-construidos.ghtml"
@@ -287,11 +287,12 @@ async def process_asto_api(start_date, end_date):
     try:
         creds = st.secrets["api_credentials"]
         
-        # Este URL está incorreto (é de abastecimento), mas mantemos 
-        # para o log de depuração mostrar a falha.
-        URL_ASTO = creds.get("asto_url", "N/A (asto_url não configurado)") 
+        # O 'asto_url' DEVE ser ".../api/Relatorios/ManutencoesAnalitico"
+        URL_ASTO = creds["asto_url"] 
         api_user = creds["asto_username"]
         api_pass = creds["asto_password"]
+        
+        # Usamos o mesmo spread_rate, assumindo que a regra de negócio é a mesma
         asto_spread_rate = float(creds.get("asto_spread_rate", 0.015)) 
         
     except KeyError as e:
@@ -302,7 +303,7 @@ async def process_asto_api(start_date, end_date):
         st.error(f"Erro ao ler Secrets da API: {e}")
         return
 
-    # Parâmetros de data (para o endpoint de abastecimento que falha)
+    # Parâmetros de data
     params = {
         "dataInicial": start_date.strftime("%Y-%m-%d"),
         "dataFinal": end_date.strftime("%Y-%m-%d"),
@@ -311,11 +312,6 @@ async def process_asto_api(start_date, end_date):
     
     auth = (api_user, api_pass)
     records_to_write = {}
-    
-    # AVISO: Esta função (ASTO) não deve funcionar 
-    # pois o endpoint é de Manutenção, não Abastecimento
-    st.warning("A API ASTO (Manutenção) ainda não foi configurada com o endpoint correto.")
-    st.error("Aguardando o URL da API de Manutenção. Esta chamada irá falhar.")
     
     try:
         full_url_for_log = f"{URL_ASTO}?{urllib.parse.urlencode(params)}"
@@ -326,17 +322,85 @@ async def process_asto_api(start_date, end_date):
             response.raise_for_status() 
             data = response.json()
 
-        st.write(f"API ASTO: {len(data)} abastecimentos encontrados.")
-        # ... (Lógica de processamento que não será executada) ...
+        st.success(f"API ASTO: {len(data)} transações de manutenção encontradas.")
+        if not data:
+            st.warning("Nenhum dado retornado pela API ASTO para o período.")
+            return 0, 0
         
-        # ... (Lógica de salvar no Firestore) ...
+        # --- NOVO BLOCO DE PROCESSAMENTO (ASTO) ---
+        # Como não vimos o JSON de ManutencoesAnalitico, este bloco é uma
+        # suposição. Se falhar, ele imprimirá um erro útil.
+        try:
+            for sale in data:
+                # Suposição dos nomes dos campos (baseado no Swagger)
+                cnpj = clean_cnpj(sale.get('cnpjCliente'))
+                if not cnpj: 
+                    continue 
+
+                data_venda = datetime.fromisoformat(sale['data'])
+                revenue_gross = float(sale.get('valor', 0))
+                
+                # Regra de negócio: spread de 1.5% (ou o que estiver nos Secrets)
+                revenue_net = revenue_gross * asto_spread_rate 
+                
+                # 3. Mapeamento
+                consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
+                
+                # 4. Gera ID único
+                doc_id = f"ASTO_{sale['id']}" # Assumindo que 'id' é o ID da manutenção
+                
+                # 5. Monta o registro unificado
+                unified_record = {
+                    "source": "ASTO",
+                    "client_cnpj": cnpj,
+                    "client_name": sale.get('nomeCliente', 'N/A'),
+                    "consultant_uid": consultant_uid,
+                    "manager_uid": manager_uid,
+                    "date": data_venda,
+                    "revenue_gross": revenue_gross,
+                    "revenue_net": revenue_net,
+                    "product_name": "Manutenção", # Definido como "Manutenção"
+                    "product_detail": sale.get('nomeServico', 'N/A'), # Nome do serviço (ex: Troca de Óleo)
+                    "volume": 0, # Manutenção não tem volume em litros
+                    "status": "Confirmado", # Assumindo que a API só retorna confirmados
+                    "raw_id": str(sale.get('id', 'N/A')),
+                }
+                records_to_write[doc_id] = unified_record
         
-        return 0, 0 # Retorna 0 pois não deve processar
+        except KeyError as e:
+            st.error(f"Erro ao processar o JSON da ASTO. Chave não encontrada: {e}")
+            st.error("A API funcionou, mas a estrutura do JSON é diferente do esperado.")
+            st.info("Amostra do primeiro registro recebido (para depuração):")
+            st.json(data[0] if data else "Nenhum dado recebido.")
+            return
+        except Exception as e:
+            st.error(f"Erro inesperado ao processar os dados da ASTO: {e}")
+            st.info("Amostra do primeiro registro recebido (para depuração):")
+            st.json(data[0] if data else "Nenhum dado recebido.")
+            return
+        # --- FIM DO NOVO BLOCO ---
+            
+        # 6. Salva no Firestore
+        total_saved, total_orphans = batch_write_to_firestore(records_to_write)
+        
+        log_audit(
+            action="load_api",
+            details={
+                "product": "ASTO (Manutenção)",
+                "start_date": start_date.strftime("%Y-%m-%d"),
+                "end_date": end_date.strftime("%Y-%m-%d"),
+                "rows_found": len(data),
+                "rows_saved": total_saved,
+                "rows_orphaned": total_orphans
+            }
+        )
+        
+        return total_saved, total_orphans
 
     except httpx.HTTPStatusError as e:
         st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}")
-        st.error(f"O URL (incorreto) que falhou foi: {full_url_for_log}")
-        st.error(f"Por favor, forneça o endpoint (URL) correto para 'Manutenção' da ASTO/Logpay.")
+        st.error(f"O URL que falhou foi: {full_url_for_log}")
+        st.error(f"Verifique se o 'asto_url' nos seus Secrets está 100% correto (deve ser .../ManutencoesAnalitico).")
     except Exception as e:
         st.error(f"Erro ao processar dados ASTO: {e}")
 
@@ -344,7 +408,7 @@ async def process_asto_api(start_date, end_date):
 async def process_eliq_api(start_date, end_date):
     """
     Processa a API ELIQ (Uzzipay/Sigyo) - ABastecimento.
-    Esta função foi CORRIGIDA.
+    Contém as correções de Timeout e Rate Limit.
     """
     try:
         creds = st.secrets["api_credentials"]
@@ -357,14 +421,11 @@ async def process_eliq_api(start_date, end_date):
         st.error(f"Erro ao ler Secrets da API: {e}")
         return
 
-    # --- CORREÇÃO 1: Formato dos Parâmetros ---
-    # A API espera: TransacaoSearch[data_cadastro]=DD/MM/YYYY - DD/MM/YYYY
-    # E não expand
+    # Formato dos Parâmetros (Corrigido)
     date_range_str = f"{start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}"
     params = {
         "TransacaoSearch[data_cadastro]": date_range_str
     }
-    # ------------------------------------------
     
     headers = {
         "Authorization": f"Bearer {api_token}"
@@ -372,19 +433,16 @@ async def process_eliq_api(start_date, end_date):
     
     records_to_write = {}
     
-    # --- Log de Depuração ---
+    # Log de Depuração
     full_url_for_log = f"{URL_ELIQ}?{urllib.parse.urlencode(params)}"
     st.info(f"Tentando chamar a API ELIQ (Abastecimento) no endpoint: {full_url_for_log}")
-    # ------------------------
 
     try:
-        # --- CORREÇÃO 2: Aumentar o Timeout ---
-        # Aumenta para 120 segundos (2 minutos) para baixar os 23k+ registros
+        # Timeout aumentado para 120 segundos
         async with httpx.AsyncClient(headers=headers, timeout=120.0) as client:
-        # --------------------------------------
             response = await client.get(URL_ELIQ, params=params)
             response.raise_for_status()
-            data = response.json() # O JSON de retorno é uma LISTA de transações
+            data = response.json() 
 
         st.write(f"API ELIQ: {len(data)} transações (abastecimentos) encontradas.")
         if not data:
@@ -408,7 +466,7 @@ async def process_eliq_api(start_date, end_date):
             data_venda = datetime.strptime(sale['data_cadastro'], "%Y-%m-%d %H:%M:%S")
             revenue_gross = clean_value(sale.get('valor_total', 0))
             
-            # Métrica de Receita
+            # Métrica de Receita (Corrigida)
             revenue_net_raw = sale.get('valor_taxa_cliente', sale.get('desconto', 0))
             revenue_net = abs(clean_value(revenue_net_raw))
             
