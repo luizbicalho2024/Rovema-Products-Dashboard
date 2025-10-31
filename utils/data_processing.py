@@ -279,7 +279,7 @@ def process_rovema_csv(uploaded_file):
 async def process_asto_api(start_date, end_date):
     """
     Processa a API ASTO (Logpay) - MANUTENÇÃO.
-    Correção final: As datas são parte do PATH, não query params.
+    Correção: Datas no PATH + 'api-version' como query param.
     """
     
     full_url_for_log = "https://revistacasaejardim.globo.com/arquitetura/noticia/2025/02/como-o-mundo-teria-sido-23-projetos-arquitetonicos-que-nunca-foram-construidos.ghtml"
@@ -303,15 +303,17 @@ async def process_asto_api(start_date, end_date):
         return
 
     # --- CORREÇÃO APLICADA AQUI ---
-    # As datas são formatadas e anexadas ao URL
+    # 1. As datas são formatadas e anexadas ao URL
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
     
     # O URL final é construído com as datas no caminho (path)
     URL_ASTO_FINAL = f"{URL_ASTO_BASE}/{start_str}/{end_str}"
     
-    # Os parâmetros de query (params) agora estão vazios
-    params = {}
+    # 2. O 'api-version' é re-adicionado como parâmetro de consulta
+    params = {
+        "api-version": "1.0"
+    }
     # -----------------------------
     
     auth = (api_user, api_pass)
@@ -319,11 +321,11 @@ async def process_asto_api(start_date, end_date):
     
     try:
         # Atualiza a variável de log
-        full_url_for_log = URL_ASTO_FINAL
+        full_url_for_log = f"{URL_ASTO_FINAL}?{urllib.parse.urlencode(params)}"
         st.info(f"Tentando chamar a API ASTO (Manutenção) no endpoint: {full_url_for_log}")
         
         async with httpx.AsyncClient(auth=auth, timeout=30.0) as client:
-            # Chama o URL final e passa os parâmetros (vazios)
+            # Chama o URL final e passa os parâmetros
             response = await client.get(URL_ASTO_FINAL, params=params)
             response.raise_for_status() 
             data = response.json()
@@ -341,7 +343,12 @@ async def process_asto_api(start_date, end_date):
                 if not cnpj: 
                     continue 
 
-                data_venda = datetime.fromisoformat(sale['data'])
+                # Corrigindo parser de data (se 'data' não tiver T/Z)
+                try:
+                    data_venda = datetime.fromisoformat(sale['data'])
+                except ValueError:
+                    data_venda = datetime.strptime(sale['data'], "%Y-%m-%d %H:%M:%S")
+
                 revenue_gross = float(sale.get('valor', 0))
                 
                 # Regra de negócio: spread de 1.5% (ou o que estiver nos Secrets)
