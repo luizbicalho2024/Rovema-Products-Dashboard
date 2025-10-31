@@ -279,7 +279,7 @@ def process_rovema_csv(uploaded_file):
 async def process_asto_api(start_date, end_date):
     """
     Processa a API ASTO (Logpay) - MANUTENÇÃO.
-    Tentativa de correção: removendo o 'api-version'.
+    Correção final: As datas são parte do PATH, não query params.
     """
     
     full_url_for_log = "https://revistacasaejardim.globo.com/arquitetura/noticia/2025/02/como-o-mundo-teria-sido-23-projetos-arquitetonicos-que-nunca-foram-construidos.ghtml"
@@ -288,11 +288,10 @@ async def process_asto_api(start_date, end_date):
         creds = st.secrets["api_credentials"]
         
         # O 'asto_url' DEVE ser ".../api/Relatorios/ManutencoesAnalitico"
-        URL_ASTO = creds["asto_url"] 
+        URL_ASTO_BASE = creds["asto_url"] 
         api_user = creds["asto_username"]
         api_pass = creds["asto_password"]
         
-        # Usamos o mesmo spread_rate, assumindo que a regra de negócio é a mesma
         asto_spread_rate = float(creds.get("asto_spread_rate", 0.015)) 
         
     except KeyError as e:
@@ -304,22 +303,28 @@ async def process_asto_api(start_date, end_date):
         return
 
     # --- CORREÇÃO APLICADA AQUI ---
-    # Parâmetros de data, REMOVENDO o 'api-version'
-    params = {
-        "dataInicial": start_date.strftime("%Y-%m-%d"),
-        "dataFinal": end_date.strftime("%Y-%m-%d")
-    }
+    # As datas são formatadas e anexadas ao URL
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+    
+    # O URL final é construído com as datas no caminho (path)
+    URL_ASTO_FINAL = f"{URL_ASTO_BASE}/{start_str}/{end_str}"
+    
+    # Os parâmetros de query (params) agora estão vazios
+    params = {}
     # -----------------------------
     
     auth = (api_user, api_pass)
     records_to_write = {}
     
     try:
-        full_url_for_log = f"{URL_ASTO}?{urllib.parse.urlencode(params)}"
+        # Atualiza a variável de log
+        full_url_for_log = URL_ASTO_FINAL
         st.info(f"Tentando chamar a API ASTO (Manutenção) no endpoint: {full_url_for_log}")
         
         async with httpx.AsyncClient(auth=auth, timeout=30.0) as client:
-            response = await client.get(URL_ASTO, params=params)
+            # Chama o URL final e passa os parâmetros (vazios)
+            response = await client.get(URL_ASTO_FINAL, params=params)
             response.raise_for_status() 
             data = response.json()
 
@@ -399,7 +404,6 @@ async def process_asto_api(start_date, end_date):
     except httpx.HTTPStatusError as e:
         st.error(f"Erro na API ASTO: {e.response.status_code} - {e.response.text}")
         st.error(f"O URL que falhou foi: {full_url_for_log}")
-        st.error(f"Verifique se o 'asto_url' nos seus Secrets está 100% correto (deve ser .../ManutencoesAnalitico).")
     except Exception as e:
         st.error(f"Erro ao processar dados ASTO: {e}")
 
