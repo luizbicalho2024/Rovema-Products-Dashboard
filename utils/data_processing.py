@@ -279,7 +279,7 @@ def process_rovema_csv(uploaded_file):
 async def process_asto_api(start_date, end_date):
     """
     Processa a API ASTO (Logpay) - MANUTENÇÃO.
-    Esta função foi CORRIGIDA para o endpoint 'ManutencoesAnalitico'.
+    Tentativa de correção: removendo o 'api-version'.
     """
     
     full_url_for_log = "https://revistacasaejardim.globo.com/arquitetura/noticia/2025/02/como-o-mundo-teria-sido-23-projetos-arquitetonicos-que-nunca-foram-construidos.ghtml"
@@ -303,12 +303,13 @@ async def process_asto_api(start_date, end_date):
         st.error(f"Erro ao ler Secrets da API: {e}")
         return
 
-    # Parâmetros de data
+    # --- CORREÇÃO APLICADA AQUI ---
+    # Parâmetros de data, REMOVENDO o 'api-version'
     params = {
         "dataInicial": start_date.strftime("%Y-%m-%d"),
-        "dataFinal": end_date.strftime("%Y-%m-%d"),
-        "api-version": "1.0"
+        "dataFinal": end_date.strftime("%Y-%m-%d")
     }
+    # -----------------------------
     
     auth = (api_user, api_pass)
     records_to_write = {}
@@ -327,9 +328,7 @@ async def process_asto_api(start_date, end_date):
             st.warning("Nenhum dado retornado pela API ASTO para o período.")
             return 0, 0
         
-        # --- NOVO BLOCO DE PROCESSAMENTO (ASTO) ---
-        # Como não vimos o JSON de ManutencoesAnalitico, este bloco é uma
-        # suposição. Se falhar, ele imprimirá um erro útil.
+        # --- BLOCO DE PROCESSAMENTO (ASTO) ---
         try:
             for sale in data:
                 # Suposição dos nomes dos campos (baseado no Swagger)
@@ -378,7 +377,7 @@ async def process_asto_api(start_date, end_date):
             st.info("Amostra do primeiro registro recebido (para depuração):")
             st.json(data[0] if data else "Nenhum dado recebido.")
             return
-        # --- FIM DO NOVO BLOCO ---
+        # --- FIM DO BLOCO ---
             
         # 6. Salva no Firestore
         total_saved, total_orphans = batch_write_to_firestore(records_to_write)
