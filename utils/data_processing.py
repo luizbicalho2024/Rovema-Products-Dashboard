@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
 from utils.firebase_config import get_db
-from utils.logger import log_audit  # Importa a nova função de log
-import httpx # Para chamadas de API
+from utils.logger import log_audit
+import httpx
 from datetime import datetime
-import urllib.parse # Importado para depuração
-import time # IMPORTADO PARA O SLEEP
-import json # IMPORTADO PARA DEBUG DO ASTO
+import urllib.parse
+import time
+import json
 
 # --- FUNÇÕES DE LIMPEZA (ETL) ---
 
@@ -19,7 +19,7 @@ def clean_value(value_str):
     
     value_str = str(value_str).strip()
     value_str = value_str.replace("R$", "").replace("%", "")
-    value_str = value_str.replace(".", "").replace(",", ".") # Converte 1.000,00 para 1000.00
+    value_str = value_str.replace(".", "").replace(",", ".")
     try:
         return float(value_str)
     except ValueError:
@@ -32,33 +32,30 @@ def clean_cnpj(cnpj_str):
     
     cnpj_str = str(cnpj_str)
     
-    # Remove cotações (ex: "3,96829E+12")
     if 'E' in cnpj_str.upper():
         try:
             cnpj_str = "{:.0f}".format(float(cnpj_str.replace(',', '.')))
         except:
-            pass # Deixa seguir para a limpeza padrão
+            pass 
 
-    # Remove caracteres não numéricos
     cleaned_cnpj = "".join(filter(str.isdigit, cnpj_str))
-    return cleaned_cnpj.zfill(14) # Garante que tem 14 dígitos
+    return cleaned_cnpj.zfill(14)
 
 
 # --- MAPPER DE CARTEIRA (O CORAÇÃO DO SISTEMA) ---
 
-@st.cache_data(ttl=600) # Cache de 10 minutos para o mapa de clientes
+@st.cache_data(ttl=600)
 def get_client_portfolio_map():
     """
     Busca no Firestore e cria um dicionário (mapa) de:
     { "cnpj_limpo": {"consultant_uid": "...", "manager_uid": "..."} }
-    Esta é a função mais importante para performance.
     """
     db = get_db()
     clients_ref = db.collection("clients").stream()
     client_map = {}
     for client in clients_ref:
         data = client.to_dict()
-        cnpj = client.id # O ID do documento é o CNPJ limpo
+        cnpj = client.id
         client_map[cnpj] = {
             "consultant_uid": data.get("consultant_uid"),
             "manager_uid": data.get("manager_uid")
@@ -67,59 +64,66 @@ def get_client_portfolio_map():
 
 def map_sale_to_consultant(cnpj):
     """Mapeia uma venda (via CNPJ) ao consultor/gestor."""
-    client_map = get_client_portfolio_map() # Usa o mapa em cache
+    client_map = get_client_portfolio_map()
     cnpj_limpo = clean_cnpj(cnpj)
     
     if cnpj_limpo in client_map:
         return client_map[cnpj_limpo]["consultant_uid"], client_map[cnpj_limpo]["manager_uid"]
     else:
-        return None, None # Venda "Órfã"
+        return None, None
 
 # --- FUNÇÕES DE CARGA (POR PRODUTO) ---
 
 def batch_write_to_firestore(records):
-    """Escreve os registros em lotes no Firestore."""
+    """
+    Escreve os registros em lotes no Firestore.
+    Esta função agora é chamada pela PÁGINA ADMIN, não pelas funções de fetch.
+    """
+    if not records:
+        st.warning("Nenhum registro para salvar.")
+        return 0, 0
+        
     db = get_db()
     batch = db.batch()
     count = 0
     total_written = 0
-    total_orphans = 0 # Contagem de órfãs
+    total_orphans = 0
     
     total_records = len(records)
-    progress_bar = st.progress(0, text="Salvando dados no banco... (Isso pode levar vários minutos)")
+    progress_bar = st.progress(0, text=f"Salvando {total_records} registros no banco... (Isso pode levar vários minutos)")
     
+    # records é um dict, iteramos sobre os items
     for i, (doc_id, data) in enumerate(records.items()):
         doc_ref = db.collection("sales_data").document(doc_id)
-        batch.set(doc_ref, data) # .set() faz o "upsert" (cria ou sobrescreve)
+        batch.set(doc_ref, data)
         count += 1
         
         if data.get("consultant_uid") is None:
             total_orphans += 1
         
-        if count == 499: # Limite do batch é 500
+        if count == 499:
             batch.commit()
             total_written += count
-            
-            # Pausa para evitar Rate Limit (Erro 429)
-            time.sleep(1) # Pausa por 1 segundo
-            
-            batch = db.batch() # Novo batch
+            time.sleep(1) # Pausa para evitar Rate Limit
+            batch = db.batch()
             count = 0
             
-            # Atualiza a barra de progresso
             progress_percentage = (i + 1) / total_records
             progress_bar.progress(progress_percentage, text=f"Salvando dados... ({total_written} / {total_records} registros)")
             
     if count > 0:
-        batch.commit() # Salva o lote final
+        batch.commit()
         total_written += count
         
     progress_bar.progress(1.0, text=f"Concluído! {total_written} registros salvos.")
     
-    # Invalida o cache do mapa de clientes
+    # Invalida o cache
     st.cache_data.clear()
 
-    return total_written, total_orphans # Retorna contagem de órfãs
+    return total_written, total_orphans
+
+# --- Funções de CSV (elas já fazem o 'preview' mostrando o df, então mantemos) ---
+# (Se quiser o mesmo fluxo de 2 botões para CSV, me avise, mas é mais complexo)
 
 def process_bionio_csv(uploaded_file):
     """Processa o CSV Bionio."""
@@ -135,46 +139,37 @@ def process_bionio_csv(uploaded_file):
         return
         
     st.write(f"Arquivo Bionio lido: {len(df)} linhas encontradas.")
-    
-    # 1. Filtra apenas pedidos pagos/transferidos
     df_paid = df[df['Status do pedido'].isin(['Transferido', 'Pago e Agendado'])].copy()
     st.write(f"{len(df_paid)} registros de vendas válidas ('Transferido' ou 'Pago e Agendado').")
     
     if df_paid.empty:
         st.warning("Nenhum registro de venda válida encontrado no arquivo.")
-        return 0, 0 # Retorna zero para não dar erro na página admin
+        return 0, 0
 
     records_to_write = {}
     
     for _, row in df_paid.iterrows():
-        # 2. Limpeza e ETL
         cnpj = clean_cnpj(row['CNPJ da organização'])
         data_pagamento_str = row['Data do pagamento do pedido']
         
         try:
             data_pagamento = datetime.strptime(data_pagamento_str, "%d/%m/%Y")
         except:
-            continue # Pula se a data do pagamento for inválida
+            continue
 
         revenue = clean_value(row['Valor total do pedido'])
-        
-        # 3. Mapeamento
         consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
-        
-        # 4. Gera ID único (Evita duplicidade)
-        # Bionio_NumeroPedido_DataPagamento
         doc_id = f"BIONIO_{row['Número do pedido']}_{data_pagamento_str.replace('/', '-')}"
         
-        # 5. Monta o registro unificado
         unified_record = {
             "source": "Bionio",
             "client_cnpj": cnpj,
             "client_name": row['Nome fantasia'],
             "consultant_uid": consultant_uid,
             "manager_uid": manager_uid,
-            "date": data_pagamento, # Timestamp
+            "date": data_pagamento,
             "revenue_gross": revenue,
-            "revenue_net": revenue, # Bionio não tem spread, usamos o valor total
+            "revenue_net": revenue,
             "product_name": row['Nome do benefício'],
             "status": row['Status do pedido'],
             "payment_type": row['Tipo de pagamento'],
@@ -182,20 +177,8 @@ def process_bionio_csv(uploaded_file):
         }
         records_to_write[doc_id] = unified_record
         
-    # 6. Salva no Firestore
     total_saved, total_orphans = batch_write_to_firestore(records_to_write)
-    
-    log_audit(
-        action="upload_csv",
-        details={
-            "product": "Bionio",
-            "rows_found": len(df),
-            "rows_processed": len(df_paid),
-            "rows_saved": total_saved,
-            "rows_orphaned": total_orphans
-        }
-    )
-    
+    log_audit("upload_csv", {"product": "Bionio", "rows_saved": total_saved, "rows_orphaned": total_orphans})
     return total_saved, total_orphans
 
 def process_rovema_csv(uploaded_file):
@@ -212,79 +195,60 @@ def process_rovema_csv(uploaded_file):
         return
 
     st.write(f"Arquivo Rovema Pay lido: {len(df)} linhas encontradas.")
-    
-    # 1. Filtra apenas transações pagas
     df_paid = df[df['Status'].isin(['Pago', 'Antecipado'])].copy()
     st.write(f"{len(df_paid)} registros de vendas válidas ('Pago' ou 'Antecipado').")
 
     if df_paid.empty:
         st.warning("Nenhum registro de venda válida encontrado no arquivo.")
-        return 0, 0 # Retorna zero para não dar erro na página admin
+        return 0, 0
 
     records_to_write = {}
     
     for _, row in df_paid.iterrows():
-        # 2. Limpeza e ETL
         cnpj = clean_cnpj(row['CNPJ'])
-        data_venda_str = row['Venda'] # Ex: 01/09/2025 07:01:16
+        data_venda_str = row['Venda']
         
         try:
             data_venda = datetime.strptime(data_venda_str, "%d/%m/%Y %H:%M:%S")
         except:
-            continue # Pula se a data for inválida
+            continue
 
         revenue_gross = clean_value(row['Bruto'])
-        # Métrica de receita: Assumindo que "Spread" é a nossa receita
         revenue_net = clean_value(row['Spread']) 
-        
-        # 3. Mapeamento
         consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
-        
-        # 4. Gera ID único
         doc_id = f"ROVEMA_{row['ID Venda']}_{row['ID Parcela']}"
         
-        # 5. Monta o registro unificado
         unified_record = {
             "source": "Rovema Pay",
             "client_cnpj": cnpj,
             "client_name": row['EC'],
             "consultant_uid": consultant_uid,
             "manager_uid": manager_uid,
-            "date": data_venda, # Timestamp
+            "date": data_venda,
             "revenue_gross": revenue_gross,
-            "revenue_net": revenue_net, # Receita da empresa
-            "product_name": row['Tipo'], # Débito / Crédito
-            "product_detail": row['Bandeira'], # mastercard, visa
+            "revenue_net": revenue_net,
+            "product_name": row['Tipo'],
+            "product_detail": row['Bandeira'],
             "status": row['Status'],
             "raw_id": f"{row['ID Venda']}-{row['ID Parcela']}",
         }
         records_to_write[doc_id] = unified_record
         
-    # 6. Salva no Firestore
     total_saved, total_orphans = batch_write_to_firestore(records_to_write)
-    
-    log_audit(
-        action="upload_csv",
-        details={
-            "product": "Rovema Pay",
-            "rows_found": len(df),
-            "rows_processed": len(df_paid),
-            "rows_saved": total_saved,
-            "rows_orphaned": total_orphans
-        }
-    )
-    
+    log_audit("upload_csv", {"product": "Rovema Pay", "rows_saved": total_saved, "rows_orphaned": total_orphans})
     return total_saved, total_orphans
 
-async def process_asto_api(start_date, end_date):
+
+# --- Funções da API (AGORA SÓ BUSCAM E PROCESSAM) ---
+
+async def fetch_asto_data(start_date, end_date):
     """
-    Processa a API ASTO (Logpay) - MANUTENÇÃO.
-    Esta função está DESATIVADA até que um endpoint funcional seja fornecido.
+    Busca dados ASTO e retorna o dict de registros.
+    (Atualmente desativado e retorna None)
     """
     
     # --- MUDANÇA APLICADA ---
     # Interrompe a execução e informa o usuário
-    
     st.error("Integração ASTO (Manutenção) Pausada")
     st.warning("""
     Não foi possível carregar os dados do ASTO (Manutenção).
@@ -296,27 +260,25 @@ async def process_asto_api(start_date, end_date):
     **Ação Necessária:** Por favor, entre em contato com o suporte da ASTO/Logpay e solicite um **endpoint de transações analíticas de manutenção** que inclua o `cnpjCliente`, `valor` e `data` de cada transação.
     """)
     
-    return 0, 0
+    return None # Retorna None para indicar falha
     # --- FIM DA MUDANÇA ---
 
 
-async def process_eliq_api(start_date, end_date):
+async def fetch_eliq_data(start_date, end_date):
     """
-    Processa a API ELIQ (Uzzipay/Sigyo) - ABastecimento.
-    Contém as correções de Timeout e Rate Limit.
+    Busca dados ELIQ e retorna o dict de registros.
     """
     try:
         creds = st.secrets["api_credentials"]
-        URL_ELIQ = creds["eliq_url"] # Deve ser ".../api/transacoes"
+        URL_ELIQ = creds["eliq_url"]
         api_token = creds["eliq_token"]
     except KeyError as e:
         st.error(f"Secret 'api_credentials.{e.args[0]}' não encontrado. Verifique seus Secrets.")
-        return
+        return None
     except Exception as e:
         st.error(f"Erro ao ler Secrets da API: {e}")
-        return
+        return None
 
-    # Formato dos Parâmetros (Corrigido)
     date_range_str = f"{start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}"
     params = {
         "TransacaoSearch[data_cadastro]": date_range_str
@@ -328,12 +290,10 @@ async def process_eliq_api(start_date, end_date):
     
     records_to_write = {}
     
-    # Log de Depuração
     full_url_for_log = f"{URL_ELIQ}?{urllib.parse.urlencode(params)}"
     st.info(f"Tentando chamar a API ELIQ (Abastecimento) no endpoint: {full_url_for_log}")
 
     try:
-        # Timeout aumentado para 120 segundos
         async with httpx.AsyncClient(headers=headers, timeout=120.0) as client:
             response = await client.get(URL_ELIQ, params=params)
             response.raise_for_status()
@@ -342,7 +302,7 @@ async def process_eliq_api(start_date, end_date):
         st.write(f"API ELIQ: {len(data)} transações (abastecimentos) encontradas.")
         if not data:
             st.warning("Nenhum dado retornado pela API ELIQ para o período.")
-            return 0, 0
+            return {} # Retorna dict vazio
 
         for sale in data:
             if sale.get('status') != 'confirmada':
@@ -361,7 +321,6 @@ async def process_eliq_api(start_date, end_date):
             data_venda = datetime.strptime(sale['data_cadastro'], "%Y-%m-%d %H:%M:%S")
             revenue_gross = clean_value(sale.get('valor_total', 0))
             
-            # Métrica de Receita (Corrigida)
             revenue_net_raw = sale.get('valor_taxa_cliente', sale.get('desconto', 0))
             revenue_net = abs(clean_value(revenue_net_raw))
             
@@ -369,13 +328,9 @@ async def process_eliq_api(start_date, end_date):
             if not produto_info:
                 produto_info = sale.get('informacao', {}).get('produto', {})
             
-            # 3. Mapeamento
             consultant_uid, manager_uid = map_sale_to_consultant(cnpj)
-            
-            # 4. Gera ID único
             doc_id = f"ELIQ_{sale['id']}"
             
-            # 5. Monta o registro unificado
             unified_record = {
                 "source": "ELIQ",
                 "client_cnpj": cnpj,
@@ -384,7 +339,7 @@ async def process_eliq_api(start_date, end_date):
                 "manager_uid": manager_uid,
                 "date": data_venda,
                 "revenue_gross": revenue_gross,
-                "revenue_net": revenue_net, # Receita Corrigida
+                "revenue_net": revenue_net,
                 "product_name": produto_info.get('nome', 'N/A'),
                 "product_detail": produto_info.get('categoria', 'N/A'),
                 "volume": clean_value(sale.get('quantidade', 0)),
@@ -393,28 +348,18 @@ async def process_eliq_api(start_date, end_date):
             }
             records_to_write[doc_id] = unified_record
             
-        # 6. Salva no Firestore
-        # Esta função (batch_write_to_firestore) agora tem o sleep(1)
-        total_saved, total_orphans = batch_write_to_firestore(records_to_write)
-        
-        log_audit(
-            action="load_api",
-            details={
-                "product": "ELIQ (Abastecimento)",
-                "start_date": start_date.strftime("%Y-%m-%d"),
-                "end_date": end_date.strftime("%Y-%m-%d"),
-                "rows_found": len(data),
-                "rows_saved": total_saved,
-                "rows_orphaned": total_orphans
-            }
-        )
-        
-        return total_saved, total_orphans
+        # --- MUDANÇA APLICADA ---
+        # Não salva mais, apenas retorna o dict de registros
+        return records_to_write
+        # ------------------------
 
     except httpx.HTTPStatusError as e:
         st.error(f"Erro na API ELIQ: {e.response.status_code} - {e.response.text}")
         st.error(f"O URL completo que falhou foi: {full_url_for_log}")
+        return None
     except httpx.TimeoutException:
         st.error(f"Erro na API ELIQ: O Timeout de 120 segundos foi excedido. A API está muito lenta.")
+        return None
     except Exception as e:
         st.error(f"Erro ao processar dados ELIQ: {e}")
+        return None
