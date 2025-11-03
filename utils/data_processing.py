@@ -122,8 +122,7 @@ def batch_write_to_firestore(records):
 
     return total_written, total_orphans
 
-# --- Funções de CSV (elas já fazem o 'preview' mostrando o df, então mantemos) ---
-# (Se quiser o mesmo fluxo de 2 botões para CSV, me avise, mas é mais complexo)
+# --- Funções de CSV (Elas não usam o fluxo de 2 botões por enquanto) ---
 
 def process_bionio_csv(uploaded_file):
     """Processa o CSV Bionio."""
