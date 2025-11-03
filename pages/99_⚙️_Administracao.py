@@ -15,8 +15,9 @@ from utils.logger import log_audit
 from utils.data_processing import (
     process_bionio_csv, 
     process_rovema_csv,
-    process_asto_api,
-    process_eliq_api
+    fetch_asto_data,    # <-- Importa a nova função FETCH
+    fetch_eliq_data,    # <-- Importa a nova função FETCH
+    batch_write_to_firestore # <-- Importa a função de salvar
 )
 
 # --- 1. Proteção da Página ---
@@ -29,8 +30,6 @@ st.title("⚙️ Painel de Administração")
 @st.cache_data(ttl=300)
 def get_all_users_and_clients():
     db = get_db()
-    
-    # Busca todos os usuários
     users_ref = db.collection("users").stream()
     users_list = []
     consultants_map = {}
@@ -47,12 +46,10 @@ def get_all_users_and_clients():
         }
         users_list.append(user_data)
         
-        # Cria mapas de consultores para as outras funções
         if user_data['role'] == 'consultant':
             consultants_map[user.id] = user_data
             consultants_list_dict[user.id] = user_data['name']
             
-    # Busca todos os clientes
     clients_ref = db.collection("clients").stream()
     clients_list = []
     for client in clients_ref:
@@ -67,16 +64,14 @@ def get_all_users_and_clients():
 
 @st.cache_data(ttl=300)
 def get_goals(month_id):
-    """Busca metas do mês (ex: '2025-10')"""
     db = get_db()
     goals_doc = db.collection("goals").document(month_id).get()
     if goals_doc.exists:
         return goals_doc.to_dict()
     return {}
 
-@st.cache_data(ttl=60) # Cache curto
+@st.cache_data(ttl=60)
 def get_orphan_sales():
-    """Busca vendas onde consultant_uid é Nulo."""
     db = get_db()
     sales_ref = db.collection("sales_data")
     query = sales_ref.where("consultant_uid", "==", None).limit(500)
@@ -101,9 +96,8 @@ def get_orphan_sales():
         st.error(f"Erro ao consultar vendas órfãs: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=60) # Cache curto
+@st.cache_data(ttl=60)
 def get_audit_logs(limit=100):
-    """Busca os logs de auditoria mais recentes."""
     db = get_db()
     logs_ref = db.collection("audit_logs")
     query = logs_ref.order_by("timestamp", direction="DESCENDING").limit(limit)
@@ -132,7 +126,7 @@ try:
     df_consultants = df_users[df_users['role'] == 'consultant'].copy()
 except Exception as e:
     st.error(f"Erro crítico ao conectar ao Firestore: {e}")
-    st.info("Verifique se as credenciais [firebase_service_account] estão corretas nos Secrets.")
+    st.info("Verifique se as credenciais [firebase_service_account] estão corretas.")
     st.stop()
     
 
@@ -146,6 +140,12 @@ tab_assign, tab_clients, tab_users, tab_goals, tab_csv, tab_api, tab_logs = st.t
     "☁️ Carga de Dados (API)",
     "📜 Logs de Auditoria"
 ])
+
+# --- Inicializa o st.session_state para os previews ---
+if 'asto_preview_data' not in st.session_state:
+    st.session_state.asto_preview_data = None
+if 'eliq_preview_data' not in st.session_state:
+    st.session_state.eliq_preview_data = None
 
 
 # --- ABA 1: ATRIBUIR CLIENTES (Sua sugestão!) ---
@@ -169,13 +169,11 @@ with tab_assign:
     else:
         st.warning(f"Encontradas **{len(df_orphans)}** vendas órfãs (limitado a 500 por vez).")
         
-        # Usando st.data_editor para uma interface de atribuição rápida
-        df_orphans["assign_to_uid"] = "" # Adiciona coluna vazia
-
+        df_orphans["assign_to_uid"] = ""
         edited_df = st.data_editor(
             df_orphans,
             column_config={
-                "doc_id": None, # Esconde o ID
+                "doc_id": None,
                 "client_name": st.column_config.TextColumn("Cliente"),
                 "client_cnpj": st.column_config.TextColumn("CNPJ"),
                 "source": st.column_config.TextColumn("Produto"),
@@ -208,14 +206,12 @@ with tab_assign:
                         consultant_data = consultants_map[consultant_uid]
                         manager_uid = consultant_data["manager_uid"]
                         
-                        # 1. Atualiza o documento da VENDA (sales_data)
                         sale_ref = db.collection("sales_data").document(doc_id)
                         batch.update(sale_ref, {
                             "consultant_uid": consultant_uid,
                             "manager_uid": manager_uid
                         })
                         
-                        # 2. Atualiza (ou cria) o cadastro do CLIENTE
                         client_cnpj = row["client_cnpj"]
                         client_name = row["client_name"]
                         
@@ -228,7 +224,7 @@ with tab_assign:
                                 "updated_at": datetime.now()
                             }, merge=True)
                         
-                        count += 2 # Duas operações
+                        count += 2
                         assigned_count += 1
                         
                         if count >= 490:
@@ -253,11 +249,9 @@ with tab_clients:
     if df_clients.empty:
         st.warning("Nenhum cliente cadastrado no sistema ainda.")
     else:
-        # Mapeia UID para Nome para visualização
         consultant_name_map = {u['uid']: u['name'] for _, u in df_users.iterrows()}
         df_clients['consultant_name'] = df_clients['consultant_uid'].map(consultant_name_map).fillna("N/A")
         
-        # Filtro
         search_name = st.text_input("Buscar por nome ou CNPJ")
         
         if search_name:
@@ -441,31 +435,91 @@ with tab_api:
     
     st.divider()
 
-    st.subheader("Produto: ASTO (Logpay)")
+    # --- LÓGICA DO ASTO (MANUTENÇÃO) ---
+    st.subheader("Produto: ASTO (Manutenção)")
     st.markdown(f"Usando usuário: `{st.secrets.get('api_credentials', {}).get('asto_username', 'N/A')}`")
     
-    if st.button("Carregar Dados ASTO"):
+    if st.button("1. Buscar e Pré-visualizar Dados ASTO"):
         with st.spinner("Buscando dados na API ASTO..."):
-            result = asyncio.run(process_asto_api(api_start_date, api_end_date))
-            if result:
-                total_saved, total_orphans = result
+            # Chama a função FETCH, que agora retorna os dados
+            records_dict = asyncio.run(fetch_asto_data(api_start_date, api_end_date))
+            if records_dict is not None:
+                st.session_state.asto_preview_data = records_dict
+            else:
+                st.session_state.asto_preview_data = None # Limpa em caso de erro
+
+    # --- Bloco de Preview e Confirmação (ASTO) ---
+    if st.session_state.asto_preview_data:
+        records_dict = st.session_state.asto_preview_data
+        st.subheader("Pré-visualização dos Dados ASTO")
+        st.info(f"Total de {len(records_dict)} registros encontrados.")
+        
+        # Converte o dict para DataFrame para o preview
+        preview_df = pd.DataFrame.from_dict(records_dict, orient='index')
+        st.dataframe(preview_df.head(10))
+        
+        col1, col2 = st.columns(2)
+        
+        if col1.button("✅ Confirmar e Salvar no Banco (ASTO)", type="primary"):
+            with st.spinner("Salvando dados ASTO... Isso pode levar alguns minutos."):
+                total_saved, total_orphans = batch_write_to_firestore(records_dict)
+                
+                log_audit("load_api_confirmed", {"product": "ASTO (Manutenção)", "rows_saved": total_saved, "rows_orphaned": total_orphans})
                 st.success(f"Carga ASTO concluída! {total_saved} registros salvos.")
                 if total_orphans > 0:
                     st.warning(f"**{total_orphans} vendas órfãs** detectadas. Acesse 'Atribuir Clientes'.")
+                
+                # Limpa o preview
+                st.session_state.asto_preview_data = None
+                st.rerun()
 
+        if col2.button("❌ Cancelar (ASTO)"):
+            st.session_state.asto_preview_data = None
+            st.rerun()
+                    
     st.divider()
     
-    st.subheader("Produto: ELIQ (Uzzipay)")
+    # --- LÓGICA DO ELIQ (ABASTECIMENTO) ---
+    st.subheader("Produto: ELIQ (Abastecimento)")
     st.markdown(f"Usando URL: `{st.secrets.get('api_credentials', {}).get('eliq_url', 'N/A')}`")
 
-    if st.button("Carregar Dados ELIQ"):
-        with st.spinner("Buscando dados na API ELIQ..."):
-            result = asyncio.run(process_eliq_api(api_start_date, api_end_date))
-            if result:
-                total_saved, total_orphans = result
+    if st.button("1. Buscar e Pré-visualizar Dados ELIQ"):
+        with st.spinner("Buscando dados na API ELIQ... (Isso pode levar 2 minutos)"):
+            # Chama a função FETCH, que agora retorna os dados
+            records_dict = asyncio.run(fetch_eliq_data(api_start_date, api_end_date))
+            if records_dict is not None:
+                st.session_state.eliq_preview_data = records_dict
+            else:
+                st.session_state.eliq_preview_data = None # Limpa em caso de erro
+
+    # --- Bloco de Preview e Confirmação (ELIQ) ---
+    if st.session_state.eliq_preview_data:
+        records_dict = st.session_state.eliq_preview_data
+        st.subheader("Pré-visualização dos Dados ELIQ")
+        st.info(f"Total de {len(records_dict)} registros encontrados.")
+        
+        # Converte o dict para DataFrame para o preview
+        preview_df = pd.DataFrame.from_dict(records_dict, orient='index')
+        st.dataframe(preview_df.head(10))
+        
+        col1, col2 = st.columns(2)
+        
+        if col1.button("✅ Confirmar e Salvar no Banco (ELIQ)", type="primary"):
+            with st.spinner("Salvando dados ELIQ... Isso pode levar alguns minutos."):
+                total_saved, total_orphans = batch_write_to_firestore(records_dict)
+                
+                log_audit("load_api_confirmed", {"product": "ELIQ (Abastecimento)", "rows_saved": total_saved, "rows_orphaned": total_orphans})
                 st.success(f"Carga ELIQ concluída! {total_saved} registros salvos.")
                 if total_orphans > 0:
                     st.warning(f"**{total_orphans} vendas órfãs** detectadas. Acesse 'Atribuir Clientes'.")
+                
+                # Limpa o preview
+                st.session_state.eliq_preview_data = None
+                st.rerun()
+
+        if col2.button("❌ Cancelar (ELIQ)"):
+            st.session_state.eliq_preview_data = None
+            st.rerun()
 
 
 # --- ABA 7: LOGS DE AUDITORIA ---
@@ -479,9 +533,7 @@ with tab_logs:
     if df_logs.empty:
         st.info("Nenhum log de auditoria encontrado.")
     else:
-        # Reordena colunas para melhor visualização
         df_logs = df_logs[["timestamp", "user_email", "action", "details"]]
-
         st.dataframe(
             df_logs,
             use_container_width=True,
